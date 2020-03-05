@@ -45,15 +45,19 @@ def bench_triton(x, bsz, mask, num_repeat):
   start = time()
   for i in range(num_repeat):
     y = linear(x)
+  torch.cuda.synchronize()
   end = time()
   ty = (end - start) / num_repeat
   return ty
   
 # parameters
-M, N, K = 256, 256, 256
-bsz = 16
+M, N, K = 2048, 2048, 2048
+bsz, sparsity = 32, 0.9
+# initialize mask
+probs = torch.Tensor([sparsity, 1-sparsity])
+generator = torch.distributions.categorical.Categorical(probs)
+mask = generator.sample((K//bsz, N//bsz))
 # initialize inputs
-mask = torch.randint(0, 2, (K//bsz, N//bsz))
 x = torch.rand((M, K), dtype=torch.float32, requires_grad=True).cuda()
 w = torch.rand((K, N), dtype=torch.float32, requires_grad=True).cuda()
 dy = torch.rand((M, N), dtype=torch.float32).cuda()
@@ -66,7 +70,8 @@ ty, tdx, tdw = run_triton(x, w, mask, bsz, dy)
 assert(torch.allclose(ty, ry))
 assert(torch.allclose(tdx, rdx))
 assert(torch.allclose(tdw, rdw))
+print('Tests passed!')
 # benchmark
 num_repeat = 10
 ty = bench_triton(x, bsz, mask, num_repeat)
-print(ty)
+print(f'{sparsity*100}% sparsity (block = {bsz}): {ty}secs')
