@@ -27,7 +27,7 @@ def run_reference(x, w, mask, bsz, dy):
   return y, dx, dw
 
 def run_triton(x, w, mask, bsz, dy):
-  linear = torch_blocksparse.Linear(x.size(0), x.size(1), bsz, mask).cuda()
+  linear = torch_blocksparse.Linear(w.size(0), w.size(1), bsz, mask).cuda()
   linear.weight.data.copy_(w)
   y = linear(x)
   y.backward(dy)
@@ -39,7 +39,7 @@ def run_triton(x, w, mask, bsz, dy):
 
 def bench_triton(x, bsz, mask, num_repeat):
   from time import time
-  linear = torch_blocksparse.Linear(x.size(0), x.size(1), bsz, mask).cuda()
+  linear = torch_blocksparse.Linear(w.size(0), w.size(1), bsz, mask).cuda()
   # benchmark forward pass
   y = linear(x)
   start = time()
@@ -51,7 +51,7 @@ def bench_triton(x, bsz, mask, num_repeat):
   return ty
   
 # parameters
-M, N, K = 2048, 2048, 2048
+M, N, K = 2048, 512, 768
 bsz, sparsity = 32, 0.9
 # initialize mask
 probs = torch.Tensor([sparsity, 1-sparsity])

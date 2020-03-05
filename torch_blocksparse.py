@@ -303,7 +303,7 @@ class Linear(torch.nn.Module):
     self.in_features = in_features
     self.out_features = out_features
     self.block_size = block_size
-    self.weight = torch.nn.Parameter(torch.Tensor(out_features, in_features))
+    self.weight = torch.nn.Parameter(torch.Tensor(in_features, out_features))
     self.reset_parameters()
     # create look-up tables
     self.y_lut, self.y_locks, self.y_width = _linear.make_ydx_lut(mask, block_size)
