@@ -134,6 +134,7 @@ class _linear(torch.autograd.Function):
       seg_size = max(triton.cdiv(max_size, 4), min_size*2)
     else:
       seg_size = max_size
+    seg_size = max_size
     # split reduction into segments
     div = sizes // seg_size
     rem = sizes % seg_size
@@ -190,7 +191,7 @@ class _linear(torch.autograd.Function):
     lut = torch.cat((header, incs)).type(torch.int32).cuda()
     # create locks
     num_locks = max(1, lockid.max())
-    locks = torch.zeros((2*mask.size(0), num_locks), dtype=torch.int32).cuda()
+    locks = torch.zeros((2*width, num_locks), dtype=torch.int32).cuda()
     return lut, locks, width
   
   @staticmethod

@@ -52,21 +52,22 @@ def bench_triton(x, bsz, mask, num_repeat):
   
 # parameters
 M, N, K = 2048, 512, 768
-bsz, sparsity = 32, 0.9
+bsz, sparsity = 32, 0.50
 # initialize mask
 probs = torch.Tensor([sparsity, 1-sparsity])
 generator = torch.distributions.categorical.Categorical(probs)
 mask = generator.sample((K//bsz, N//bsz))
 # initialize inputs
-x = torch.rand((M, K), dtype=torch.float32, requires_grad=True).cuda()
-w = torch.rand((K, N), dtype=torch.float32, requires_grad=True).cuda()
-dy = torch.rand((M, N), dtype=torch.float32).cuda()
+x = torch.ones((M, K), dtype=torch.float32, requires_grad=True).cuda()
+w = torch.ones((K, N), dtype=torch.float32, requires_grad=True).cuda()
+dy = torch.ones((M, N), dtype=torch.float32).cuda()
 x.retain_grad()
 w.retain_grad()
 # run
 ry, rdx, rdw = run_reference(x, w, mask, bsz, dy)
 ty, tdx, tdw = run_triton(x, w, mask, bsz, dy)
 # test
+print((tdx - rdx))
 assert(torch.allclose(ty, ry))
 assert(torch.allclose(tdx, rdx))
 assert(torch.allclose(tdw, rdw))
