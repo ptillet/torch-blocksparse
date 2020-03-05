@@ -1,4 +1,4 @@
-import blocksparse
+import torch_blocksparse
 import torch
 
 def reference_dot(x, w, mask):
@@ -36,10 +36,10 @@ rdw = w.grad.clone()
 x.grad.zero_()
 w.grad.zero_()
 # triton result
-y_lut, y_locks, y_width = blocksparse._linear.make_ydx_lut(mask, BS)
-dx_lut, dx_locks, dx_width = blocksparse._linear.make_ydx_lut(mask.T, BS)
-dw_lut, dw_locks, dw_width = blocksparse._linear.make_dw_lut(mask, BS)
-ty = blocksparse._linear.apply(x, w, BS, 
+y_lut, y_locks, y_width = torch_blocksparse._linear.make_ydx_lut(mask, BS)
+dx_lut, dx_locks, dx_width = torch_blocksparse._linear.make_ydx_lut(mask.T, BS)
+dw_lut, dw_locks, dw_width = torch_blocksparse._linear.make_dw_lut(mask, BS)
+ty = torch_blocksparse._linear.apply(x, w, BS, 
                                y_lut, y_locks, y_width,
                                dx_lut, dx_locks, dx_width,
                                dw_lut, dw_locks, dw_width)
@@ -58,7 +58,7 @@ print((tdw - rdw).abs().max())
 # Test Module #
 ###############
 
-linear = blocksparse.Linear(256, 256, BS, mask).cuda()
+linear = torch_blocksparse.Linear(K, N, BS, mask).cuda()
 linear.weight.data.copy_(w)
 nny = linear(x)
 nny.backward(dy)
