@@ -37,9 +37,18 @@ def run_triton(x, w, mask, bsz, dy):
   w.grad.zero_()
   return y, dx, dw
 
-
-
-
+def bench_triton(x, bsz, mask, num_repeat):
+  from time import time
+  linear = torch_blocksparse.Linear(x.size(0), x.size(1), bsz, mask).cuda()
+  # benchmark forward pass
+  y = linear(x)
+  start = time()
+  for i in range(num_repeat):
+    y = linear(x)
+  end = time()
+  ty = (end - start) / num_repeat
+  return ty
+  
 # parameters
 M, N, K = 256, 256, 256
 bsz = 16
@@ -58,3 +67,6 @@ assert(torch.allclose(ty, ry))
 assert(torch.allclose(tdx, rdx))
 assert(torch.allclose(tdw, rdw))
 # benchmark
+num_repeat = 10
+ty = bench_triton(x, bsz, mask, num_repeat)
+print(ty)

@@ -124,12 +124,21 @@ class _linear(torch.autograd.Function):
   # performs load-balancing to achieve more smaller reductions
   # of size seg_size
   @staticmethod
-  def load_balance(sizes, seg_size=8):
+  def load_balance(sizes):
+    # segment size
+    # heuristics taken from OpenAI blocksparse code
+    # https://github.com/openai/blocksparse/blob/master/blocksparse/matmul.py#L95
+    max_size = sizes.max()
+    min_size = sizes[torch.nonzero(sizes)].min()
+    if max_size > min_size > 2.0:
+      seg_size = max(triton.cdiv(max_size, 4), min_size*2)
+    else:
+      seg_size = max_size
+    # split reduction into segments
     div = sizes // seg_size
     rem = sizes % seg_size
     packs = div + (rem != 0).long()
     width = packs.sum()
-    # split reduction into segments
     segments = torch.empty(width, dtype=sizes.dtype)
     column = torch.empty_like(segments)
     lockid = torch.zeros_like(segments)
