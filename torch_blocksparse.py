@@ -134,7 +134,6 @@ class _linear(torch.autograd.Function):
       seg_size = max(triton.cdiv(max_size, 4), min_size*2)
     else:
       seg_size = max_size
-    seg_size = max_size
     # split reduction into segments
     div = sizes // seg_size
     rem = sizes % seg_size

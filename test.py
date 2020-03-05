@@ -67,7 +67,6 @@ w.retain_grad()
 ry, rdx, rdw = run_reference(x, w, mask, bsz, dy)
 ty, tdx, tdw = run_triton(x, w, mask, bsz, dy)
 # test
-print((tdx - rdx))
 assert(torch.allclose(ty, ry))
 assert(torch.allclose(tdx, rdx))
 assert(torch.allclose(tdw, rdw))
