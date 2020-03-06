@@ -8,8 +8,9 @@ For now, only block-sparse matrix-multiplication are supported, for both FP32 an
 
 ## Installation
 
-Torch-Blocksparse depends on the [Triton](https://github.com/ptillet/triton) language and compiler:
+Torch-Blocksparse depends on CUDA 10.1 and the [Triton](https://github.com/ptillet/triton) language and compiler:
 ```
+sudo apt-get install llvm-8-dev;
 pip install -e "git+https://github.com/ptillet/triton.git#egg=triton&subdirectory=python"
 ```
 
