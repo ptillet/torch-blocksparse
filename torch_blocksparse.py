@@ -50,8 +50,8 @@ class _linear(torch.autograd.Function):
     TYPE* pa[TM, TK] = A + ram[:, newaxis] * STRIDE_AM + rka[newaxis, :] * STRIDE_AK;
     TYPE* pb[TK, TN] = B + rbn[newaxis, :] * STRIDE_BN + rkb[:, newaxis] * STRIDE_BK;
     // pre-fetch
-    bool checka[TM, TK] = ram[:, newaxis] < M;
-    bool checkb[TK, TN] = 1;
+    bool checka[TM, TK] = (ram[:, newaxis] < M);
+    bool checkb[TK, TN] = K > 0;
     TYPE a[TM, TK] = checka ? *pa : 0;
     TYPE b[TK, TN] = checkb ? *pb : 0;
 
@@ -134,10 +134,11 @@ class _linear(torch.autograd.Function):
       seg_size = max(triton.cdiv(max_size, 4), min_size*2)
     else:
       seg_size = max_size
+    seg_size = max_size
     # split reduction into segments
     div = sizes // seg_size
     rem = sizes % seg_size
-    packs = div + (rem != 0).long()
+    packs = div + (sizes==0).long() + (rem != 0).long()
     width = packs.sum()
     segments = torch.empty(width, dtype=sizes.dtype)
     column = torch.empty_like(segments)
@@ -148,7 +149,8 @@ class _linear(torch.autograd.Function):
     col_idx = 0
     for i in range(len(sizes)):
       d, r = div[i], rem[i]
-      last = current + d + (r > 0)
+      isempty = sizes[i] == 0
+      last = current + d + (r > 0) + isempty
       # column id
       column[current:last] = col_idx
       # lock id
@@ -158,7 +160,7 @@ class _linear(torch.autograd.Function):
         maxid[current:last] = last - current
       # segment size
       segments[current:current+d] = seg_size
-      if r > 0:
+      if r > 0 or isempty:
         segments[current+d] = r
       current = last
       col_idx += 1
@@ -178,10 +180,11 @@ class _linear(torch.autograd.Function):
     segments, column, lockid, maxid, offsets = _linear.load_balance(sizes)
     # pointer increments
     nnz = torch.nonzero(mask.T)
+    offsets = torch.min(offsets, (nnz.size(0) - 1)*torch.ones_like(offsets))
     idx = nnz[:, 1]
     incs = idx.clone() 
     incs[1:] -= idx[:-1]
-    incs[offsets] = idx[offsets]
+    incs[offsets[sizes>0]] = idx[offsets[sizes>0]]
     # create header
     width = column.size(0)
     offsets += 5*width

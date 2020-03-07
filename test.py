@@ -51,27 +51,31 @@ def bench_triton(x, bsz, mask, num_repeat):
   return ty
   
 # parameters
-M, N, K = 2048, 512, 768
-bsz, sparsity = 32, 0.50
-# initialize mask
-probs = torch.Tensor([sparsity, 1-sparsity])
-generator = torch.distributions.categorical.Categorical(probs)
-mask = generator.sample((K//bsz, N//bsz))
-# initialize inputs
-x = torch.ones((M, K), dtype=torch.float32, requires_grad=True).cuda()
-w = torch.ones((K, N), dtype=torch.float32, requires_grad=True).cuda()
-dy = torch.ones((M, N), dtype=torch.float32).cuda()
-x.retain_grad()
-w.retain_grad()
-# run
-ry, rdx, rdw = run_reference(x, w, mask, bsz, dy)
-ty, tdx, tdw = run_triton(x, w, mask, bsz, dy)
-# test
-assert(torch.allclose(ty, ry))
-assert(torch.allclose(tdx, rdx))
-assert(torch.allclose(tdw, rdw))
-print('Tests passed!')
-# benchmark
-num_repeat = 10
-ty = bench_triton(x, bsz, mask, num_repeat)
-print(f'{sparsity*100}% sparsity (block = {bsz}): {ty}secs')
+M, N, K = 1024, 512, 768
+bsz = 32
+for sparsity in [0., 0.1, 0.25, 0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95]:
+    torch.manual_seed(1)
+    # initialize mask
+    probs = torch.Tensor([sparsity, 1-sparsity])
+    generator = torch.distributions.categorical.Categorical(probs)
+    mask = generator.sample((K//bsz, N//bsz))
+    # initialize inputs
+    x = torch.ones((M, K), dtype=torch.float32, requires_grad=True).cuda()
+    w = torch.ones((K, N), dtype=torch.float32, requires_grad=True).cuda()
+    dy = torch.ones((M, N), dtype=torch.float32).cuda()
+    x.retain_grad()
+    w.retain_grad()
+    # run
+    ry, rdx, rdw = run_reference(x, w, mask, bsz, dy)
+    ty, tdx, tdw = run_triton(x, w, mask, bsz, dy)
+    # test
+    idx = ((ty - ry).abs() > 1e-4)
+    assert(torch.allclose(ty, ry))
+    assert(torch.allclose(tdx, rdx))
+    assert(torch.allclose(tdw, rdw))
+    #print('Tests passed!')
+
+    # benchmark
+    num_repeat = 10
+    ts = bench_triton(x, bsz, mask, num_repeat)
+    print(f'{sparsity*100}% sparsity (block = {bsz}): {ts*1e3:4.2f}ms')
