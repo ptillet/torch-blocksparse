@@ -40,16 +40,14 @@ def run_triton(x, w, mask, bsz, dy):
 def bench_triton(x, bsz, mask, num_repeat):
   from time import time
   linear = torch_blocksparse.Linear(w.size(0), w.size(1), bsz, mask).cuda()
-  # benchmark forward pass
+  linear.bench_y = num_repeat
+  linear.bench_dx = num_repeat
+  linear.bench_dw = num_repeat
   y = linear(x)
   torch.cuda.synchronize()
-  start = time()
-  for i in range(num_repeat):
-    y = linear(x)
+  y = linear(x)
   torch.cuda.synchronize()
-  end = time()
-  ty = (end - start) / num_repeat
-  return ty
+  return linear.timings.ty*1e-9
   
 def bench_openai(x, bsz, mask, num_repeat):
   # import and disable all logging
@@ -82,9 +80,10 @@ def bench_openai(x, bsz, mask, num_repeat):
 
 
 # parameters
-M, N, K = 2048, 2048, 2048
+M, N, K = 1024, 1024, 1024
 bsz = 32
 rhos = [0., 0.10, 0.25, 0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95]
+#rhos = [0.50]
 for sparsity in rhos:
     torch.manual_seed(1)
     # initialize mask
@@ -111,4 +110,4 @@ for sparsity in rhos:
     triton_ts = bench_triton(x, bsz, mask, num_repeat)
     #openai_ts = bench_openai(x, bsz, mask, num_repeat)
     flops = 2 * M * bsz * bsz * mask.nonzero().size(0)
-    print(f'{sparsity*100}% sparsity (block = {bsz}): {triton_ts*1e3:4.2f}ms')
+    print(f'{sparsity*100}% sparsity (block = {bsz}): {triton_ts*1e3:2.4f}ms')

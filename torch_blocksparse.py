@@ -1,6 +1,7 @@
 import triton
 import torch
 import math
+from collections import namedtuple
 
 class _linear(torch.autograd.Function):
 
@@ -226,7 +227,9 @@ class _linear(torch.autograd.Function):
   def forward(ctx, x, w, block_size, 
               y_lut, y_locks, y_width,
               dx_lut, dx_locks, dx_width,
-              dw_lut, dw_locks, dw_width):
+              dw_lut, dw_locks, dw_width,
+              bench_y, bench_dx, bench_dw,
+              timings):
     M, Kx = x.size()
     Kw, N = w.size()
     dtype = x.dtype
@@ -247,12 +250,15 @@ class _linear(torch.autograd.Function):
     y = torch.empty((M, N), dtype=dtype, device=x.device)
     # launch kernel
     grid = lambda opt: [y_width, triton.cdiv(M, opt.d('TM'))]
-    kernel(x, w, y, lda, ldb, ldc, M, Kx, y_lut, y_locks, y_locks.size(1), grid=grid)
+    timings.ty = kernel(x, w, y, lda, ldb, ldc, M, Kx, y_lut, y_locks, y_locks.size(1), grid=grid, bench=bench_y)
     # save information in context
     ctx.dx_width = dx_width
     ctx.dw_width = dw_width
     ctx.kernel = kernel
     ctx.block_size = block_size
+    ctx.bench_dx = bench_dx
+    ctx.bench_dw = bench_dw
+    ctx.timings = timings
     ctx.save_for_backward(x, w, dx_lut, dx_locks, dw_lut, dw_locks)
     return y
   
@@ -264,6 +270,9 @@ class _linear(torch.autograd.Function):
     dw_width = ctx.dw_width
     block_size = ctx.block_size
     kernel = ctx.kernel
+    bench_dx = ctx.bench_dx
+    bench_dw = ctx.bench_dw
+    timings = ctx.timings
     # shapes
     M, N = dy.size()
     _, K = x.size()
@@ -286,7 +295,7 @@ class _linear(torch.autograd.Function):
       dx = torch.empty_like(x)
       # launch kernel
       grid = lambda opt: [dx_width, triton.cdiv(M, opt.d('TM'))]
-      kernel(dy, w, dx, N, N, K, M, N, dx_lut, dx_locks, dx_locks.size(1), grid=grid)
+      timings.tdx = kernel(dy, w, dx, N, N, K, M, N, dx_lut, dx_locks, dx_locks.size(1), grid=grid, bench=bench_dx)
     #################
     # weight gradient
     #################
@@ -306,12 +315,14 @@ class _linear(torch.autograd.Function):
       dw = torch.zeros_like(w)
       # launch kernel
       grid = lambda opt: [opt.d('TZ'), dw_width]
-      kernel(x, dy, dw, K, N, N, K, M, dw_lut, dw_locks, dw_locks.size(1), grid=grid)
+      timings.tdw = kernel(x, dy, dw, K, N, N, K, M, dw_lut, dw_locks, dw_locks.size(1), grid=grid, bench=bench_dw)
     # done
     return dx, dw, None,\
           None, None, None,\
           None, None, None,\
-          None, None, None
+          None, None, None,\
+          None, None, None,\
+          None
 linear = _linear.apply
 
 class Linear(torch.nn.Module):
@@ -325,6 +336,12 @@ class Linear(torch.nn.Module):
     num_blocks = mask.nonzero().size(0)
     #self.weight = torch.nn.Parameter(torch.Tensor(num_blocks, block_size, block_size))
     self.reset_parameters()
+    # benchmark
+    self.bench_y = 0
+    self.bench_dx = 0
+    self.bench_dw = 0
+    # timings
+    self.timings = namedtuple('Timings', 'ty tdx tdw')
     # create look-up tables
     self.y_lut, self.y_locks, self.y_width = _linear.make_ydx_lut(mask, block_size, 8)
     self.dx_lut, self.dx_locks, self.dx_width = _linear.make_ydx_lut(mask.T, block_size, 8)
@@ -341,4 +358,6 @@ class Linear(torch.nn.Module):
     return linear(input, self.weight, self.block_size,
                   self.y_lut, self.y_locks, self.y_width,
                   self.dx_lut, self.dx_locks, self.dx_width,
-                  self.dw_lut, self.dw_locks, self.dw_width)
+                  self.dw_lut, self.dw_locks, self.dw_width,
+                  self.bench_y, self.bench_dx, self.bench_dw,
+                  self.timings)
