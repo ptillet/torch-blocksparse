@@ -5,10 +5,12 @@ import math
 class _linear(torch.autograd.Function):
 
   src = '''
-  __global__ void main (TYPE* A __readonly  __noalias __aligned(16),
+  __global__ void NAME (TYPE* A __readonly  __noalias __aligned(16),
                        TYPE* B __readonly  __noalias __aligned(16),
-                       TYPE* C __writeonly __noalias __aligned(16),
-                       int lda, int ldb, int ldc,
+                       TYPE* C __noalias __aligned(16),
+                       int lda __multipleof(8), 
+                       int ldb __multipleof(8), 
+                       int ldc __multipleof(8),
                        int M, int Kmax,
                        int* lut,
                        int* locks, int nlocks) {
@@ -20,26 +22,26 @@ class _linear(torch.autograd.Function):
     int pid1 = get_program_id(1);
 #ifdef DW
     // load LUT header
-    int *header = lut + pid0 * 2;
+    int *header = lut + pid1 * 2;
     int i = *(header + 0);
     int j = *(header + 1);
     int K = Kmax / TZ;
     int lockid = select(TZ > 1, 1, 0);
-    int offk = pid1 * K;
+    int offk = pid0 * K;
     int offm = i * TM;
     int offn = j * TN;
-    int maxid = get_num_programs(1);
+    int maxid = get_num_programs(0);
 #else
     // load LUT header
-    int *header = lut + pid1 * 5;
+    int *header = lut + pid0 * 5;
     int offset = *(header + 0);
     int K      = *(header + 1);
     int column = *(header + 2);
     int lockid = *(header + 3);
     int maxid = *(header + 4);
     int *pinc   = lut + offset;
-    int offk = (*pinc) * TK;
-    int offm = pid0 * TM;
+    int offk __multipleof(8) = *pinc;
+    int offm = pid1 * TM;
     int offn = column * TN;
 #endif
     // initialize a, b pointers
@@ -73,8 +75,9 @@ class _linear(torch.autograd.Function):
       int inc_b = TK * STRIDE_BK;
 #else
       pinc += 1;
-      int inc_a = (*pinc) * TK * STRIDE_AK;
-      int inc_b = (*pinc) * TK * STRIDE_BK;
+      int inc __multipleof(8) = *pinc;
+      int inc_a = inc * STRIDE_AK;
+      int inc_b = inc * STRIDE_BK;
 #endif
       pa += inc_a;
       pb += inc_b;
@@ -100,8 +103,8 @@ class _linear(torch.autograd.Function):
     }
     // accumulate partial result using spin-locks
     else {
-      int *plock = locks + get_program_id(0)*nlocks + lockid - 1;
-      int *pcount = plock + get_num_programs(0)*nlocks;
+      int *plock = locks + get_program_id(1)*nlocks + lockid - 1;
+      int *pcount = plock + get_num_programs(1)*nlocks;
       for(int repeat = 1; repeat == 1; repeat = atomic_cas(plock, 0, 1));
       int count = *pcount;
       if(count == 0)
@@ -124,21 +127,21 @@ class _linear(torch.autograd.Function):
   # performs load-balancing to achieve more smaller reductions
   # of size seg_size
   @staticmethod
-  def load_balance(sizes):
+  def load_balance(sizes, block_size):
     # segment size
     # heuristics taken from OpenAI blocksparse code
     # https://github.com/openai/blocksparse/blob/master/blocksparse/matmul.py#L95
     max_size = sizes.max()
     min_size = sizes[torch.nonzero(sizes)].min()
     if max_size > min_size > 2.0:
-      seg_size = max(triton.cdiv(max_size, 4), min_size*2)
+      seg_max = max(triton.cdiv(max_size, 4), min_size*2)
     else:
-      seg_size = max_size
-    seg_size = max_size
+      seg_max = max_size
+    seg_min = max(triton.cdiv(seg_max, 4), 4)
     # split reduction into segments
-    div = sizes // seg_size
-    rem = sizes % seg_size
-    packs = div + (sizes==0).long() + (rem != 0).long()
+    div = sizes // seg_max
+    rem = sizes % seg_max
+    packs = div + (sizes < seg_min).long() + (rem >= seg_min).long()
     width = packs.sum()
     segments = torch.empty(width, dtype=sizes.dtype)
     column = torch.empty_like(segments)
@@ -149,18 +152,20 @@ class _linear(torch.autograd.Function):
     col_idx = 0
     for i in range(len(sizes)):
       d, r = div[i], rem[i]
-      isempty = sizes[i] == 0
-      last = current + d + (r > 0) + isempty
+      isempty = sizes[i] < seg_min
+      last = current + d + (r >= seg_min) + isempty
       # column id
       column[current:last] = col_idx
       # lock id
-      if d > 1 or (d == 1 and r > 0):
+      if d > 1 or (d == 1 and r >= seg_min):
         nlocks += 1
         lockid[current:last] = nlocks
         maxid[current:last] = last - current
       # segment size
-      segments[current:current+d] = seg_size
-      if r > 0 or isempty:
+      segments[current:current+d] = seg_max
+      if r < seg_min and not isempty:
+        segments[current+d-1] += r
+      if r >= seg_min or isempty:
         segments[current+d] = r
       current = last
       col_idx += 1
@@ -171,20 +176,27 @@ class _linear(torch.autograd.Function):
   # Given a binary mask of 0s and 1s,
   # Construct look-up table for efficient execution on GPUs
   @staticmethod
-  def make_ydx_lut(mask, block_size):
-    # offsets in lookup table
+  def make_ydx_lut(mask, block_size, step):
     sizes = torch.sum(mask, 0)
-    offsets = torch.zeros_like(sizes)
-    offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
     # load-balancing
-    segments, column, lockid, maxid, offsets = _linear.load_balance(sizes)
+    segments, column, lockid, maxid, offsets = _linear.load_balance(sizes, block_size)
     # pointer increments
     nnz = torch.nonzero(mask.T)
     offsets = torch.min(offsets, (nnz.size(0) - 1)*torch.ones_like(offsets))
-    idx = nnz[:, 1]
+    idx = nnz[:, 1]*block_size
     incs = idx.clone() 
     incs[1:] -= idx[:-1]
-    incs[offsets[sizes>0]] = idx[offsets[sizes>0]]
+    # divide block_size into multiple steps
+    div = block_size // step
+    incs = incs.view(-1, 1).repeat(1, div)
+    incs[:, 1:] = step
+    incs[:, 0 ] -= (div-1)*step
+    # first increment for each reduction is actually the offset
+    incs[offsets[segments>0], 0] = idx[offsets[segments>0]]
+    incs = incs.view(-1)
+    # adjust offset and segment size
+    offsets *= div
+    segments *= div
     # create header
     width = column.size(0)
     offsets += 5*width
@@ -225,15 +237,16 @@ class _linear(torch.autograd.Function):
     # create kernel
     key = (dtype, block_size)
     if key not in _linear.y_kernel:
-      defines = {'TM': 64, 'TN': block_size, 'TK': block_size, 'TYPE': dtype,
+      defines = {'TM': 128, 'TN': block_size, 'TK': 8, 'TYPE': dtype,
                 'STRIDE_AM': 'lda', 'STRIDE_AK': '1',
-                'STRIDE_BN': '1', 'STRIDE_BK': 'ldb'}
-      _linear.y_kernel[key] = triton.kernel(_linear.src, defines=defines)
+                'STRIDE_BN': '1', 'STRIDE_BK': 'ldb',
+                'NAME': 'y_kernel'}
+      _linear.y_kernel[key] = triton.kernel(_linear.src, defines=defines, num_warps=[4])
     kernel = _linear.y_kernel[key]
     # allocate output
     y = torch.empty((M, N), dtype=dtype, device=x.device)
     # launch kernel
-    grid = lambda opt: [triton.cdiv(M, opt.d('TM')), y_width]
+    grid = lambda opt: [y_width, triton.cdiv(M, opt.d('TM'))]
     kernel(x, w, y, lda, ldb, ldc, M, Kx, y_lut, y_locks, y_locks.size(1), grid=grid)
     # save information in context
     ctx.dx_width = dx_width
@@ -263,15 +276,16 @@ class _linear(torch.autograd.Function):
       # create kernel
       key = (dtype, block_size)
       if key not in _linear.dx_kernel:
-        defines =  {'TM': 64, 'TN': block_size, 'TK': block_size, 'TYPE': dtype,
+        defines =  {'TM': 128, 'TN': block_size, 'TK': 8, 'TYPE': dtype,
                     'STRIDE_AM': 'lda', 'STRIDE_AK': '1',
-                    'STRIDE_BN': 'ldb', 'STRIDE_BK': '1'}
+                    'STRIDE_BN': 'ldb', 'STRIDE_BK': '1',
+                    'NAME': 'dx_kernel'}
         _linear.dx_kernel[key] = triton.kernel(_linear.src, defines=defines)
       kernel = _linear.dx_kernel[key]
       # allocate output
       dx = torch.empty_like(x)
       # launch kernel
-      grid = lambda opt: [triton.cdiv(M, opt.d('TM')), dx_width]
+      grid = lambda opt: [dx_width, triton.cdiv(M, opt.d('TM'))]
       kernel(dy, w, dx, N, N, K, M, N, dx_lut, dx_locks, dx_locks.size(1), grid=grid)
     #################
     # weight gradient
@@ -284,13 +298,14 @@ class _linear(torch.autograd.Function):
         defines =  {'TM': block_size, 'TN': block_size, 'TK': 8, 'TYPE': dtype,
                     'STRIDE_AM': '1', 'STRIDE_AK': 'lda',
                     'STRIDE_BN': '1', 'STRIDE_BK': 'ldb',
-                    'DW': True, 'TZ': 2}
+                    'DW': True, 'TZ': 2,
+                    'NAME': 'dw_kernel'}
         _linear.dw_kernel[key] = triton.kernel(_linear.src, defines=defines)
       kernel = _linear.dw_kernel[key]
       # allocate output
       dw = torch.zeros_like(w)
       # launch kernel
-      grid = lambda opt: [dw_width, opt.d('TZ')]
+      grid = lambda opt: [opt.d('TZ'), dw_width]
       kernel(x, dy, dw, K, N, N, K, M, dw_lut, dw_locks, dw_locks.size(1), grid=grid)
     # done
     return dx, dw, None,\
@@ -307,10 +322,12 @@ class Linear(torch.nn.Module):
     self.out_features = out_features
     self.block_size = block_size
     self.weight = torch.nn.Parameter(torch.Tensor(in_features, out_features))
+    num_blocks = mask.nonzero().size(0)
+    #self.weight = torch.nn.Parameter(torch.Tensor(num_blocks, block_size, block_size))
     self.reset_parameters()
     # create look-up tables
-    self.y_lut, self.y_locks, self.y_width = _linear.make_ydx_lut(mask, block_size)
-    self.dx_lut, self.dx_locks, self.dx_width = _linear.make_ydx_lut(mask.T, block_size)
+    self.y_lut, self.y_locks, self.y_width = _linear.make_ydx_lut(mask, block_size, 8)
+    self.dx_lut, self.dx_locks, self.dx_width = _linear.make_ydx_lut(mask.T, block_size, 8)
     self.dw_lut, self.dw_locks, self.dw_width = _linear.make_dw_lut(mask, block_size)
   
   def reset_parameters(self):
