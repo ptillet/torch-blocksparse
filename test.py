@@ -24,17 +24,27 @@ def run_reference(x, w, mask, bsz, dy):
   dw = w.grad.clone()
   x.grad.zero_()
   w.grad.zero_()
-  return y, dx, dw
+  return y, dx, convert_weights(dw, mask, bsz)
+
+def convert_weights(w, mask, bsz):
+  # allocate output
+  ret = torch.empty((mask.sum(), bsz, bsz), dtype=w.dtype, device=w.device)
+  # fill output
+  nnz = mask.nonzero()
+  i, j = nnz[:, 0], nnz[:, 1]
+  for idx, (ii, jj) in enumerate(zip(i, j)):
+    ret[idx, :, :] = w[ii*bsz: (ii+1)*bsz, 
+                       jj*bsz: (jj+1)*bsz]
+  return ret
 
 def run_triton(x, w, mask, bsz, dy):
   linear = torch_blocksparse.Linear(w.size(0), w.size(1), bsz, mask).cuda()
-  linear.weight.data.copy_(w)
+  linear.weight.data.copy_(convert_weights(w, mask, bsz))
   y = linear(x)
   y.backward(dy)
   dx = x.grad.clone()
   dw = linear.weight.grad.clone()
   x.grad.zero_()
-  w.grad.zero_()
   return y, dx, dw
 
 def bench_triton(x, bsz, mask, num_repeat):
@@ -66,32 +76,30 @@ def bench_openai(x, bsz, mask, num_repeat):
   M, K = x.size()
   N = mask.size(1)*bsz
   # placeholder
-  vx = tf.placeholder(tf.float32, shape=x.shape)
-  vw = tf.placeholder(tf.float32, shape=[K, N])
+  vx = tf.placeholder(tf.float32, shape=[None, K])
+  vw = tf.placeholder(tf.float32, shape=dot.w_shape)
+  w = np.random.rand(*dot.w_shape)
   # Block-sparse matrix multiplication
   y = dot(vx, vw, bench=num_repeat)
   # Run
   sess = tf.InteractiveSession()
   sess.run(tf.global_variables_initializer())
-  result = sess.run([y], feed_dict = {vx: x.cpu().detach().numpy(),
-                                        vw: w.cpu().detach().numpy()})
+  result = sess.run([y], feed_dict = {vx: x.cpu().detach().numpy(), vw: w})
   sess.close()
 
 
 
 # parameters
 M, N, K = 1024, 1024, 1024
-bsz = 32
+bsz = 16
 rhos = [0., 0.10, 0.25, 0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95]
-#rhos = [0.50]
+#rhos = [0.]
 for sparsity in rhos:
     torch.manual_seed(1)
     # initialize mask
     probs = torch.Tensor([sparsity, 1-sparsity])
     generator = torch.distributions.categorical.Categorical(probs)
     mask = generator.sample((K//bsz, N//bsz))
-    #mask[:] = 0
-    #mask[:int((1-sparsity)*mask.size(0)), :] = 1
     # initialize inputs
     x = torch.rand((M, K), dtype=torch.float32, requires_grad=True).cuda()
     w = torch.rand((K, N), dtype=torch.float32, requires_grad=True).cuda()
@@ -108,6 +116,6 @@ for sparsity in rhos:
     # benchmark
     num_repeat = 100
     triton_ts = bench_triton(x, bsz, mask, num_repeat)
-    #openai_ts = bench_openai(x, bsz, mask, num_repeat)
-    flops = 2 * M * bsz * bsz * mask.nonzero().size(0)
+    openai_ts = bench_openai(x, bsz, mask, num_repeat)
+    #flops = 2 * M * bsz * bsz * mask.nonzero().size(0)
     print(f'{sparsity*100}% sparsity (block = {bsz}): {triton_ts*1e3:2.4f}ms')
