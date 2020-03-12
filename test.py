@@ -116,6 +116,6 @@ for sparsity in rhos:
     # benchmark
     num_repeat = 100
     triton_ts = bench_triton(x, bsz, mask, num_repeat)
-    openai_ts = bench_openai(x, bsz, mask, num_repeat)
+    #openai_ts = bench_openai(x, bsz, mask, num_repeat)
     #flops = 2 * M * bsz * bsz * mask.nonzero().size(0)
     print(f'{sparsity*100}% sparsity (block = {bsz}): {triton_ts*1e3:2.4f}ms')

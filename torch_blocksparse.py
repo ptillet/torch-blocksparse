@@ -83,18 +83,20 @@ class _linear(torch.autograd.Function):
 #ifdef DW
       int inc_a = TK * STRIDE_AK;
       int inc_b = TK * STRIDE_BK;
+      bool checka[TM, TK] = k > TK;
+      bool checkb[TK, TN] = k > TK;
 #else
       pinc += 2;
       int inc_a __multipleof(8) = *pinc;
       int inc_b __multipleof(8) = *(pinc + 1);
       //TODO: __multipleof is ignored when * STRIDE_AK is inline above!
       inc_a = inc_a * STRIDE_AK;
+      bool checka[TM, TK] = k > 1;
+      bool checkb[TK, TN] = k > 1;
 #endif
       pa += inc_a;
       pb += inc_b;
       // pre-fetch
-      bool checka[TM, TK] = k > 1;
-      bool checkb[TK, TN] = k > 1;
       a = *?(checka)pa;
       b = *?(checkb)pb;
     }
