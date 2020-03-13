@@ -49,7 +49,7 @@ def run_triton(x, w, mask, bsz, dy):
 
 def bench_triton(x, bsz, mask, num_repeat):
   from time import time
-  linear = torch_blocksparse.Linear(w.size(0), w.size(1), bsz, mask).cuda()
+  linear = torch_blocksparse.Linear(w.size(0), w.size(1), bsz, mask, True).cuda()
   linear.bench_y = num_repeat
   linear.bench_dx = num_repeat
   linear.bench_dw = num_repeat
@@ -57,7 +57,7 @@ def bench_triton(x, bsz, mask, num_repeat):
   torch.cuda.synchronize()
   y = linear(x)
   torch.cuda.synchronize()
-  return linear.timings.ty*1e-9
+  return linear.matmul.time_c*1e-9
   
 def bench_openai(x, bsz, mask, num_repeat):
   # import and disable all logging
