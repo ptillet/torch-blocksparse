@@ -2,64 +2,74 @@ import torch_blocksparse
 import torch
 torch.manual_seed(0)
 
-def reference_dot(x, w, mask):
-  WS0, WS1 = w.size()
-  MS0, MS1 = mask.size()
-  assert WS0 % MS0 == 0
-  assert WS1 % MS1 == 0
-  block_size_0 = WS0 // MS0
-  block_size_1 = WS1 // MS1
-  assert block_size_0 == block_size_1
-  maskedw = w.clone()
-  for bi, wi in enumerate(range(0, WS0, block_size_0)):
-    for bj, wj in enumerate(range(0, WS1, block_size_1)):
-      maskedw[wi : wi+block_size_0,
-              wj : wj+block_size_1] *= mask[bi, bj]
-  return torch.matmul(x, maskedw)
+# convert dense matrix with explicit zeros to sparse matrix
+def dense_to_sparse(w, mask, block):
+  ret = torch.empty((mask.sum(), block, block), dtype=w.dtype, device=w.device)
+  nnz = mask.nonzero()
+  i, j = nnz[:, 0], nnz[:, 1]
+  for idx, (ii, jj) in enumerate(zip(i, j)):
+    ret[idx, :, :] = w[ii*block: (ii+1)*block, 
+                       jj*block: (jj+1)*block]
+  return ret
 
-def run_reference(x, w, mask, bsz, dy):
-  y = reference_dot(x, w, mask)
+# convert sparse matrix to dense matrix with explicit zeros
+def sparse_to_dense(w, mask, block):
+  maskedw = w.clone()
+  for bi, wi in enumerate(range(0, w.size(0), block)):
+    for bj, wj in enumerate(range(0, w.size(1), block)):
+      maskedw[wi : wi+block,
+              wj : wj+block] *= mask[bi, bj]
+  return maskedw
+
+# run reference implementation
+def run_reference(x, w, mode, trans_a, trans_b, mask, block, dy):
+  x = sparse_to_dense(x, mask, block) if mode == 'dsd' else x
+  w = sparse_to_dense(w, mask, block) if mode == 'dds' else w
+  x.retain_grad()
+  w.retain_grad()
+  xx = x.t() if trans_a else x
+  ww = w.t() if trans_b else w
+  y = torch.matmul(xx, ww)
+  y = sparse_to_dense(y, mask, block) if mode == 'sdd' else y
   y.backward(dy)
   dx = x.grad.clone()
   dw = w.grad.clone()
   x.grad.zero_()
   w.grad.zero_()
-  return y, dx, convert_weights(dw, mask, bsz)
+  y = dense_to_sparse(y, mask, block) if mode == 'sdd' else y
+  dx = dense_to_sparse(dx, mask, block) if mode == 'dsd' else dx
+  dw = dense_to_sparse(dw, mask, block) if mode == 'dds' else dw
+  return y, dx, dw
 
-def convert_weights(w, mask, bsz):
-  # allocate output
-  ret = torch.empty((mask.sum(), bsz, bsz), dtype=w.dtype, device=w.device)
-  # fill output
-  nnz = mask.nonzero()
-  i, j = nnz[:, 0], nnz[:, 1]
-  for idx, (ii, jj) in enumerate(zip(i, j)):
-    ret[idx, :, :] = w[ii*bsz: (ii+1)*bsz, 
-                       jj*bsz: (jj+1)*bsz]
-  return ret
-
-def run_triton(x, w, mask, bsz, dy):
-  linear = torch_blocksparse.Linear(w.size(0), w.size(1), bsz, mask).cuda()
-  linear.weight.data.copy_(convert_weights(w, mask, bsz))
-  y = linear(x)
+# run triton implementation
+def run_triton(x, w, mode, trans_a, trans_b, mask, block, dy):
+  op = torch_blocksparse.SparseMatMul(trans_a, trans_b, mode, mask, block)
+  x = dense_to_sparse(x, mask, block) if mode == 'dsd' else x
+  w = dense_to_sparse(w, mask, block) if mode == 'dds' else w
+  dy = dense_to_sparse(dy, mask, block) if mode == 'sdd' else dy
+  x.retain_grad()
+  w.retain_grad()
+  y = op(x, w)
   y.backward(dy)
   dx = x.grad.clone()
-  dw = linear.weight.grad.clone()
+  dw = w.grad.clone()
   x.grad.zero_()
   return y, dx, dw
 
-def bench_triton(x, bsz, mask, num_repeat):
+# benchmark triton implementation
+def bench_triton(x, w, mode, trans_a, trans_b, mask, block, num_repeat):
   from time import time
-  linear = torch_blocksparse.Linear(w.size(0), w.size(1), bsz, mask, True).cuda()
-  linear.bench_y = num_repeat
-  linear.bench_dx = num_repeat
-  linear.bench_dw = num_repeat
-  y = linear(x)
+  x = dense_to_sparse(x, mask, block) if mode == 'dsd' else x
+  w = dense_to_sparse(w, mask, block) if mode == 'dds' else w
+  op = torch_blocksparse.SparseMatMul(trans_a, trans_b, mode, mask, block)
+  op.bench = num_repeat
+  y = op(x, w)
   torch.cuda.synchronize()
-  y = linear(x)
+  y = op(x, w)
   torch.cuda.synchronize()
-  return linear.matmul.time_c*1e-9
+  return op.time_c*1e-9
   
-def bench_openai(x, bsz, mask, num_repeat):
+def bench_openai(x, block, mask, num_repeat):
   # import and disable all logging
   import os
   os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
@@ -71,10 +81,10 @@ def bench_openai(x, bsz, mask, num_repeat):
   import numpy as np
   sparsity = mask.cpu().numpy()
   # create operator
-  dot = BlocksparseMatMul(sparsity, block_size=bsz)
+  dot = BlocksparseMatMul(sparsity, block_size=block)
   # shapes
   M, K = x.size()
-  N = mask.size(1)*bsz
+  N = mask.size(1)*block
   # placeholder
   vx = tf.placeholder(tf.float32, shape=[None, K])
   vw = tf.placeholder(tf.float32, shape=dot.w_shape)
@@ -87,35 +97,50 @@ def bench_openai(x, bsz, mask, num_repeat):
   result = sess.run([y], feed_dict = {vx: x.cpu().detach().numpy(), vw: w})
   sess.close()
 
-
+def test(M, N, K, sparsity, mode, trans_a, trans_b, block):
+  torch.manual_seed(1)
+  AS0 = K if trans_a else M
+  AS1 = M if trans_a else K
+  BS0 = N if trans_b else K
+  BS1 = K if trans_b else N
+  shape = {'sdd': (M, N),
+           'dsd': (AS0, AS1),
+           'dds': (BS0, BS1)}[mode]
+  # initialize mask
+  probs = torch.Tensor([rho, 1-rho])
+  generator = torch.distributions.categorical.Categorical(probs)
+  mask = generator.sample((shape[0]//block, shape[1]//block))
+  # initialize inputs
+  x = torch.rand((AS0, AS1), dtype=torch.float32, requires_grad=True).cuda()
+  w = torch.rand((BS0, BS1), dtype=torch.float32, requires_grad=True).cuda()
+  dy = torch.rand((M, N), dtype=torch.float32).cuda()
+  x.retain_grad()
+  w.retain_grad()
+  # run
+  ry, rdx, rdw = run_reference(x.clone(), w.clone(), mode, trans_a, trans_b, mask, block, dy)
+  ty, tdx, tdw = run_triton(x.clone(), w.clone(), mode, trans_a, trans_b, mask, block, dy)
+  # test
+  assert(torch.allclose(ty, ry))
+  assert(torch.allclose(tdx, rdx))
+  assert(torch.allclose(tdw, rdw))
+  # benchmark
+  num_repeat = 100
+  triton_ts = bench_triton(x.clone(), w.clone(), mode, trans_a, trans_b, mask, block, num_repeat)
+  #openai_ts = bench_openai(x, bsz, mask, num_repeat)
+  #flops = 2 * M * bsz * bsz * mask.nonzero().size(0)
+  print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
+  
 
 # parameters
-M, N, K = 1024, 1024, 1024
-bsz = 16
+M, N, K = 256, 512, 384
+block = 16
 rhos = [0., 0.10, 0.25, 0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.95]
-#rhos = [0.]
-for sparsity in rhos:
-    torch.manual_seed(1)
-    # initialize mask
-    probs = torch.Tensor([sparsity, 1-sparsity])
-    generator = torch.distributions.categorical.Categorical(probs)
-    mask = generator.sample((K//bsz, N//bsz))
-    # initialize inputs
-    x = torch.rand((M, K), dtype=torch.float32, requires_grad=True).cuda()
-    w = torch.rand((K, N), dtype=torch.float32, requires_grad=True).cuda()
-    dy = torch.rand((M, N), dtype=torch.float32).cuda()
-    x.retain_grad()
-    w.retain_grad()
-    # run
-    ry, rdx, rdw = run_reference(x, w, mask, bsz, dy)
-    ty, tdx, tdw = run_triton(x, w, mask, bsz, dy)
-    # test
-    assert(torch.allclose(ty, ry))
-    assert(torch.allclose(tdx, rdx))
-    assert(torch.allclose(tdw, rdw))
-    # benchmark
-    num_repeat = 100
-    triton_ts = bench_triton(x, bsz, mask, num_repeat)
-    #openai_ts = bench_openai(x, bsz, mask, num_repeat)
-    #flops = 2 * M * bsz * bsz * mask.nonzero().size(0)
-    print(f'{sparsity*100}% sparsity (block = {bsz}): {triton_ts*1e3:2.4f}ms')
+for rho in rhos:
+  test(M, N, K, rho, 'dds', False, False, block)
+
+#for mode in ['sdd', 'dsd', 'dds']:
+#  for trans_a in [False, True]:
+#    for trans_b in [False, True]:
+#      for rho in rhos:
+#        test(M, N, K, rho, mode, trans_a, trans_b, bsz)
+          
