@@ -445,7 +445,9 @@ class _sparse_matmul(torch.autograd.Function):
 
 class SparseMatMul:
 
-  def __init__(self, trans_a, trans_b, mode, mask, block, bench = False):
+  def __init__(self, mask, block, mode, trans_a = False, trans_b = False, bench = False):
+    if mode not in ['sdd', 'dsd', 'dds']:
+      raise NotImplementedError('Supported modes are: sdd, dsd, dds')
     # C look-up table
     if mode == 'sdd':
       self.c_lut, self.c_locks, self.c_width = _sparse_matmul.make_sdd_lut(mask, block)
