@@ -4,7 +4,13 @@ Block-sparse operations for PyTorch
 
 ## Current State
 
-For now, only block-sparse matrix-multiplication are supported, for both FP32 and FP16 using tensor cores.
+The following operations are supported:
+```
+SPARSE = DENSE x DENSE
+DENSE = SPARSE x DENSE
+DENSE = DENSE x SPARSE
+```
+For each of these modes, either input can be transposed. Additionally, FP16 inputs are supported and will use tensor cores.
 
 ## Installation
 
@@ -24,4 +30,14 @@ You can just copy the `torch_blocksparse.py` file and use it in your project.
 
 ## Performance
 
-Performance should be comparable to the OpenAI Blocksparse package. The file `test.py` includes simple benchmarking code. Load-balancing may need to be improved for highly irregular sparsity patterns.
+Here is the performance of this package compared to OpenAI blocksparse for the DDS layout (dense = dense x sparse) with square, non-transposed inputs:
+
+![](https://docs.google.com/spreadsheets/d/e/2PACX-1vTMh8lJHOYq07d2g7AQZOKb6-WgTQqK3iudLJ8I1LCgGKw_B9eKv1KFT0nKbrizy9fw-p2VjvIbTgLJ/pubchart?oid=717347395&format=image)
+
+![](https://docs.google.com/spreadsheets/d/e/2PACX-1vTMh8lJHOYq07d2g7AQZOKb6-WgTQqK3iudLJ8I1LCgGKw_B9eKv1KFT0nKbrizy9fw-p2VjvIbTgLJ/pubchart?oid=1552535399&format=image)
+
+![](https://docs.google.com/spreadsheets/d/e/2PACX-1vTMh8lJHOYq07d2g7AQZOKb6-WgTQqK3iudLJ8I1LCgGKw_B9eKv1KFT0nKbrizy9fw-p2VjvIbTgLJ/pubchart?oid=399094259&format=image)
+
+
+
+The file `test.py` includes simple benchmarking code.
