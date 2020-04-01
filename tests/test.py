@@ -133,9 +133,9 @@ def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block):
   probs = torch.Tensor([rho, 1-rho])
   generator = torch.distributions.categorical.Categorical(probs)
   layout = generator.sample((H, shape[0]//block, shape[1]//block))
-  x = torch.ones((Z, H, AS0, AS1), dtype=torch.float32, requires_grad=True).cuda()
-  w = torch.ones((Z, H, BS0, BS1), dtype=torch.float32, requires_grad=True).cuda()
-  dy = torch.ones((Z, H, M, N), dtype=torch.float32).cuda()
+  x = torch.rand((Z, H, AS0, AS1), dtype=torch.float32, requires_grad=True).cuda()
+  w = torch.rand((Z, H, BS0, BS1), dtype=torch.float32, requires_grad=True).cuda()
+  dy = torch.rand((Z, H, M, N), dtype=torch.float32).cuda()
   x.retain_grad()
   w.retain_grad()
   # run
@@ -158,11 +158,11 @@ def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block):
 ###########
 
 def run_softmax_triton(x, scale, dx, mask, layout, block):
-  sparse_softmax = softmax.SparseSoftmax(layout, block, scale=scale, mask=mask, bench=False)
+  sparse_softmax = softmax.SparseSoftmax(layout, block, bench=False)
   dx = dense_to_sparse(dx, layout, block)
   x = dense_to_sparse(x, layout, block)
   x.retain_grad()
-  y = sparse_softmax(x)
+  y = sparse_softmax(x, scale=scale, mask=mask)
   y.backward(dx)
   dx = x.grad.clone()
   x.grad.zero_()
@@ -172,8 +172,6 @@ def run_softmax_reference(x, scale, dx, mask, layout, block):
   x = sparse_to_dense(x, layout, block, zero=float('-inf'))
   x.retain_grad()
   if mask is not None:
-    mask = mask.clone()
-    mask[mask==1.] = float('-inf')
     y = torch.softmax(x*scale + mask[:, None, None, :], -1)
   else:
     y = torch.softmax(x*scale, -1)
@@ -184,9 +182,9 @@ def run_softmax_reference(x, scale, dx, mask, layout, block):
   return y, dx
   
 def bench_softmax_triton(x, scale, mask, layout, block):
-  sparse_softmax = softmax.SparseSoftmax(layout, block, scale=scale, mask=mask, bench=True)
+  sparse_softmax = softmax.SparseSoftmax(layout, block, bench=True)
   x = dense_to_sparse(x, layout, block)
-  x = sparse_softmax(x)
+  x = sparse_softmax(x, scale=scale, mask=mask)
   return sparse_softmax.time_y*1e-9
 
 
@@ -194,11 +192,12 @@ def test_softmax(Z, H, M, N, scale, rho, block):
   # probability distribution
   probs = torch.Tensor([rho, 1-rho])
   generator = torch.distributions.categorical.Categorical(probs)
-  # initialize layout/input
+  # initialize tensors
   layout = generator.sample((H, M//block, N//block))
   x = torch.rand((Z, H, M, N), dtype=torch.float32, requires_grad=True).cuda()
-  mask = torch.randint(low=0, high=2, size=(Z, N), dtype=torch.float32, requires_grad=False).cuda()
   dx = torch.rand_like(x)
+  mask = torch.randint(low=0, high=1, size=(Z, N), dtype=torch.float32, requires_grad=False).cuda()
+  mask[mask==1.] = float('-inf')
   # execute
   ry, rdx = run_softmax_reference(x, scale, dx, mask, layout, block)
   ty, tdx = run_softmax_triton(x, scale, dx, mask, layout, block)
@@ -217,7 +216,7 @@ if __name__ == '__main__':
   test_softmax(3, 2, 256, 2048, 0.5, 0.7, 16)
   # test matmul
   for mode in ['sdd', 'dsd', 'dds']:
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 16)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 16)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 16)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 16)
+    test_mm(2, 1, 256, 512, 384, 0.5, mode, False, False, 16)
+    test_mm(2, 1, 256, 512, 384, 0.5, mode, True, False, 16)
+    test_mm(2, 1, 256, 512, 384, 0.5, mode, False, True, 16)
+    test_mm(2, 1, 256, 512, 384, 0.5, mode, True, True, 16)

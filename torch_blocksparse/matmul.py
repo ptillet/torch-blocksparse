@@ -283,7 +283,7 @@ class _sparse_matmul(torch.autograd.Function):
     locks = _sparse_matmul.get_locks(2*width*AS0*num_locks)
     c = torch.empty((AS0, width, block, block), dtype=dtype, device=a.device)
     time[0] = kernel(a, b, c, 
-                     a.size(3), b.size(3), block, 
+                     a.stride(2), b.stride(2), block, 
                      a.stride(0), b.stride(0), c.stride(0),
                      a.stride(1), b.stride(1), c.stride(0), 
                      AS2, AS3, lut, locks, num_locks, 
@@ -420,7 +420,7 @@ class _sparse_matmul(torch.autograd.Function):
     locks = _sparse_matmul.get_locks(2*AS0*AS2//32*num_locks)
     c = torch.empty((CS0, CS1, CS2, CS3), dtype=dtype, device=a.device)
     time[0] = kernel(a, b, c, 
-                     a.size(3), BS2, c.size(3), 
+                     a.stride(2), block, c.stride(2), 
                      a.stride(0), b.stride(0), c.stride(0),
                      a.stride(1), b.stride(1), c.stride(1),
                      AS2, AS3, lut, locks, num_locks, 
@@ -464,7 +464,7 @@ class _sparse_matmul(torch.autograd.Function):
     locks = _sparse_matmul.get_locks(2*BS0*BS3//32*num_locks)
     c = torch.empty((CS0, CS1, CS2, CS3), dtype=dtype, device=a.device)
     time[0] = kernel(a, b, c, 
-                     AS2, b.size(3), c.size(3), 
+                     block, b.stride(2), c.stride(2), 
                      a.stride(0), b.stride(0), c.stride(0),
                      a.stride(1), b.stride(1), c.stride(1),
                      AS1, AS2, lut, locks, num_locks, 

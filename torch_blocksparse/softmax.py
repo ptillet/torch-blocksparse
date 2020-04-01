@@ -42,8 +42,7 @@ __global__ void softmax_fwd(TYPE *X, TYPE scale,
   bool do_mask[TM, TN] = M;
   TYPE m[TM, TN] = (check && do_mask)? *pm : -INFINITY;
   TYPE x[TM, TN] = check ? *px : -INFINITY;
-  x *= scale;
-  x += (m != 0 && do_mask) ? ((TYPE[TM,TN])-INFINITY) : 0;
+  x = x * scale + (do_mask ? m : 0);
   TYPE xmax[TM]  = x[:, max];
   TYPE y[TM, TN] = exp(x - xmax[:, newaxis]);
   TYPE ysum[TM] = (check ? y : 0)[:, +];
@@ -145,7 +144,7 @@ class _sparse_softmax(torch.autograd.Function):
         return cache[key]
 
     @staticmethod
-    def forward(ctx, x, scale, layout, block, mask, lut, num_blocks, maxlut, bench, time):
+    def forward(ctx, x, scale, mask, layout, block, lut, num_blocks, maxlut, bench, time):
         # run kernel
         kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block)
         grid = lambda opt: [triton.cdiv(layout.shape[0] * layout.shape[1] * block, opt.d('TM')),
@@ -182,24 +181,21 @@ class _sparse_softmax(torch.autograd.Function):
 
 class SparseSoftmax:
     
-    def __init__(self, layout, block, scale = 1., mask = None, bench = False):
+    def __init__(self, layout, block, bench = False):
         self.fwd_lut, self.fwd_maxlut = _sparse_softmax.make_lut(layout, block)
         self.num_blocks = layout.sum()
-        self.mask = mask
         self.layout = layout
         self.block = block
         self.bench = bench
-        self.scale = scale
     
-    def __call__(self, x):
+    def __call__(self, x, scale = 1., mask = None):
         time_y = [None]
-        x = _sparse_softmax.apply(x, self.scale,
-                                  self.layout, self.block, self.mask,
+        x = _sparse_softmax.apply(x, scale, mask,
+                                  self.layout, self.block,
                                   self.fwd_lut, self.num_blocks, 
                                   self.fwd_maxlut, self.bench, time_y)
         self.time_y = time_y[0]
         return x
 
 # TODO:
-#  - Triton update
 #  - Sparse multi-head attention + test code
