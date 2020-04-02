@@ -209,10 +209,6 @@ def multi_head_attention_forward(query,                           # type: Tensor
     # else:
     #     return attn_output, None
 
-    assert dropout_p == 0
-    assert attn_mask is None
-    assert need_weights == False
-
     q = q.view(bsz, num_heads, q.shape[1], q.shape[2])
     k = k.view(bsz, num_heads, k.shape[1], k.shape[2])
     v = v.view(bsz, num_heads, v.shape[1], v.shape[2])
@@ -273,29 +269,52 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
             self.numverts = numverts
             self.vertsize = vertsize
     
+    ops = dict()
+
+    # add to cache
+    def get_ops(self, L):
+        if L not in MultiheadAttention.ops:
+            sparsity = self.sparsity
+            layout = MultiheadAttention._make_layout(self.num_heads, L // sparsity.block, sparsity.mode, 
+                                                    sparsity.stride // sparsity.block, sparsity.unidirectional,
+                                                    sparsity.numverts, sparsity.vertsize)
+            sparse_dot_sdd_nt = torch_blocksparse.SparseMatMul(layout, sparsity.block, 'sdd', 
+                                                               trans_a=False, trans_b=True)
+            sparse_dot_dsd_nn = torch_blocksparse.SparseMatMul(layout, sparsity.block, 'dsd',
+                                                               trans_a=False, trans_b=False)
+            sparse_softmax = torch_blocksparse.SparseSoftmax(layout, sparsity.block) 
+            MultiheadAttention.ops[L] = (sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax)
+        return MultiheadAttention.ops[L]
+
     # constructor
-    def __init__(self, embed_dim, num_heads, ctx_len, sparsity, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False, kdim=None, vdim=None):
+    def __init__(self, embed_dim, num_heads, sparsity, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False, kdim=None, vdim=None):
+        if dropout != 0:
+            raise NotImplementedError('dropout is not supported for now')
+
         super(MultiheadAttention, self).__init__(embed_dim, num_heads, dropout, bias, add_bias_kv, add_zero_attn, kdim, vdim)
-        layout = MultiheadAttention._make_layout(num_heads, ctx_len // sparsity.block, sparsity.mode, 
-                                                 sparsity.stride // sparsity.block, sparsity.unidirectional,
-                                                 sparsity.numverts, sparsity.vertsize)
-        # num_heads, block_size, block_size
-        self.sparse_dot_sdd_nt = torch_blocksparse.SparseMatMul(layout, sparsity.block, 'sdd', 
-                                                                trans_a=False, trans_b=True)
-        self.sparse_dot_dsd_nn = torch_blocksparse.SparseMatMul(layout, sparsity.block, 'dsd',
-                                                                trans_a=False, trans_b=False)
-        self.sparse_softmax = torch_blocksparse.SparseSoftmax(layout, sparsity.block) 
+        self.sparsity = sparsity
+        
 
     # forward pass    
     def forward(self, query, key, value, key_padding_mask=None,
                 need_weights=True, attn_mask=None):
+        # check that operation is supported
+        if query.shape != key.shape or key.shape != value.shape:
+            raise NotImplementedError('only self-attention is supported for now')
+        if attn_mask is not None:
+            raise NotImplementedError('attention mask is not supported for now')
+        if need_weights:
+            raise NotImplementedError('returning weights is not supported for now')
+        # cache look-up table computations etc
+        sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax = self.get_ops(query.shape[0])
+        # execute
         if not self._qkv_same_embed_dim:
             return multi_head_attention_forward(
                 query, key, value, self.embed_dim, self.num_heads,
                 self.in_proj_weight, self.in_proj_bias,
                 self.bias_k, self.bias_v, self.add_zero_attn,
                 self.dropout, self.out_proj.weight, self.out_proj.bias,
-                self.sparse_dot_sdd_nt, self.sparse_dot_dsd_nn, self.sparse_softmax,
+                sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax,
                 training=self.training,
                 key_padding_mask=key_padding_mask, need_weights=need_weights,
                 attn_mask=attn_mask, use_separate_proj_weight=True,
@@ -307,7 +326,7 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 self.in_proj_weight, self.in_proj_bias,
                 self.bias_k, self.bias_v, self.add_zero_attn,
                 self.dropout, self.out_proj.weight, self.out_proj.bias,
-                self.sparse_dot_sdd_nt, self.sparse_dot_dsd_nn, self.sparse_softmax,
+                sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax,
                 training=self.training,
                 key_padding_mask=key_padding_mask, need_weights=need_weights,
                 attn_mask=attn_mask)

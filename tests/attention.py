@@ -8,7 +8,7 @@ sparsity = torch_blocksparse.MultiheadAttention.SparsityInfo()
 sparsity.mode = 'dense'
 sparsity.block = 16
 torch.manual_seed(0)
-sparse_mha = torch_blocksparse.MultiheadAttention(512, num_heads, L, sparsity).cuda()
+sparse_mha = torch_blocksparse.MultiheadAttention(512, num_heads, sparsity).cuda()
 # create dense multi-head attention module
 torch.manual_seed(0)
 dense_mha  = torch.nn.modules.MultiheadAttention(512, num_heads) .cuda()
