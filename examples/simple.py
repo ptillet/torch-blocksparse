@@ -19,4 +19,3 @@ c = dot(a, b)
 # create object for Sparse = softmax(Sparse)
 softmax = torch_blocksparse.SparseSoftmax(layout, block)
 d = softmax(c)
-  
