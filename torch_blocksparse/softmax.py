@@ -1,7 +1,6 @@
 import triton
 import torch
 import math
-from test import sparse_to_dense, dense_to_sparse
 
 fwd_kernels = dict()
 fwd_src = '''

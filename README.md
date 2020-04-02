@@ -4,13 +4,21 @@ Block-sparse operations for PyTorch
 
 ## Current State
 
-The following operations are supported:
+The following functions are supported:
 ```
-SPARSE = DENSE x DENSE
-DENSE = SPARSE x DENSE
-DENSE = DENSE x SPARSE
+Matrix Multiplication: SPARSE = op(DENSE) x op(DENSE)
+Matrix Multiplication: DENSE = op(SPARSE) x op(DENSE)
+Matrix Multiplication: DENSE = op(DENSE) x op(SPARSE)
+Softmax: Sparse = Softmax(Sparse)
 ```
-For each of these modes, either input can be transposed. Additionally, FP16 inputs are supported and will use tensor cores.
+where `op()` is identity or transposition.
+
+The following modules are supported:
+```
+Sparse MultiHead Attention (https://arxiv.org/abs/1904.10509)
+```
+
+Inputs are FP32 or FP16 (with tensor cores).
 
 ## Installation
 
@@ -20,13 +28,16 @@ sudo apt-get install llvm-8-dev;
 pip install -e "git+https://github.com/ptillet/triton.git#egg=triton&subdirectory=python"
 ```
 
-Test your installation using the following:
+And run the tests:
 ```
-python test.py
+python tests/test.py
 ```
 The first run will take some time as all the necessary CUDA code will be JIT-compiled and cached in `$HOME/.triton/cache`.
 
-You can just copy the `torch_blocksparse.py` file and use it in your project.
+You can install the package as follows:
+```
+python setup.py develop
+```
 
 ## Performance
 
