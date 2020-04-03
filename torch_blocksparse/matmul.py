@@ -15,7 +15,8 @@ src = '''
                         int stride_ha __multipleof(8),
                         int stride_hb __multipleof(8),
                         int stride_hc __multipleof(8),
-                        int DS0, int Kmax,
+                        int DS0, 
+                        int SDD_K, int SDD_off_width,
                         int* lut, int* locks, int nlocks) {
     /* ---------------- */
     /*    Prologue      */
@@ -26,11 +27,12 @@ src = '''
     int pidz = get_program_id(2);
 #ifdef SDD
     // load LUT header
+    pid1 = pid1 + SDD_off_width;
     int *header = lut + pid1 * 3;
     int z = *(header + 0);
     int i = *(header + 1);
     int j = *(header + 2);
-    int AS1 = Kmax / TZ;
+    int AS1 = SDD_K / TZ;
     int lockid = select(TZ > 1, 1, 0);
     int offka = pid0 * AS1;
     int offkb = pid0 * AS1;
@@ -97,10 +99,18 @@ src = '''
     TYPE* pa[TM, TK] = A + offpa + pidz * stride_za + offha * stride_ha + ram[:, newaxis] * STRIDE_AM + rka[newaxis, :] * STRIDE_AK;
     TYPE* pb[TK, TN] = B + offpb + pidz * stride_zb + offhb * stride_hb + rbn[newaxis, :] * STRIDE_BN + rkb[:, newaxis] * STRIDE_BK;
     // pre-fetch
-    bool checka[TM, TK] = ram[:, newaxis] < DS0;
-    bool checkb[TK, TN] = AS1 > 0;
-    TYPE a[TM, TK] = checka ? *pa : 0;
-    TYPE b[TK, TN] = checkb ? *pb : 0;
+#ifdef DDS
+    bool checkam[TM, TK] = ram[:, newaxis] < DS0;
+#else
+    bool checkam[TM, TK] = AS1 > 0;
+#endif
+#ifdef DSD
+    bool checkbn[TK, TN] = rbn[newaxis, :] < DS0;
+#else
+    bool checkbn[TK, TN] = AS1 > 0;
+#endif
+    TYPE a[TM, TK] = checkam ? *pa : 0;
+    TYPE b[TK, TN] = checkbn ? *pb : 0;
 
     /* ---------------- */
     /*    Inner Loop    */
@@ -130,8 +140,10 @@ src = '''
       pa += inc_a;
       pb += inc_b;
       // pre-fetch
-      bool checka[TM, TK] = k > TK;
-      bool checkb[TK, TN] = k > TK;
+      bool checkak[TM, TK] = k > TK;
+      bool checkbk[TK, TN] = k > TK;
+      bool checka[TM, TK] = checkam && checkak;
+      bool checkb[TK, TN] = checkbk && checkbn;
       a = *?(checka)pa;
       b = *?(checkb)pb;
     }
@@ -143,7 +155,15 @@ src = '''
     // initialize c pointers
     int   rcm[TM]    = offmc + 0 ... TM;
     int   rcn[TN]    = offnc + 0 ... TN;
-    bool  checkc[TM, TN] = rcm[:, newaxis] < DS0;
+#ifdef SDD
+    bool checkc[TM, TN] = 1;
+#endif
+#ifdef DSD
+    bool checkc[TM, TN] = rcn[newaxis, :] < DS0;
+#endif
+#ifdef DDS
+    bool checkc[TM, TN] = rcm[:, newaxis] < DS0;
+#endif
     TYPE* pc[TM, TN] = C + offpc + offhc*stride_hc + pidz*stride_zc + rcm[:, newaxis]*STRIDE_CM + rcn[newaxis, :]*STRIDE_CN;
     // write-back directly
     if(lockid == 0) {
@@ -282,13 +302,21 @@ class _sparse_matmul(torch.autograd.Function):
     # create output
     locks = _sparse_matmul.get_locks(2*width*AS0*num_locks)
     c = torch.empty((AS0, width, block, block), dtype=dtype, device=a.device)
-    time[0] = kernel(a, b, c, 
-                     a.stride(2), b.stride(2), block, 
-                     a.stride(0), b.stride(0), c.stride(0),
-                     a.stride(1), b.stride(1), c.stride(0), 
-                     AS2, AS3, lut, locks, num_locks, 
-                     grid = lambda opt: [opt.d('TZ'), width, AS0], 
-                     bench = bench)
+    # maximum grid size is 65535
+    # so operation might be decomposed into multiple
+    # kernel calls
+    max_width = 49152
+    total = 0 if bench else None
+    for off_width in range(0, width, max_width):
+      current  = kernel(a, b, c, 
+                        a.stride(2), b.stride(2), block, 
+                        a.stride(0), b.stride(0), c.stride(0),
+                        a.stride(1), b.stride(1), c.stride(0), 
+                        AS2, AS3, off_width, lut, locks, num_locks, 
+                        grid = lambda opt: [opt.d('TZ'), min(max_width, width - off_width), AS0], 
+                        bench = bench)
+      total = total + current if bench else None
+    time[0] = total
     # save for backward pass
     return c
 
@@ -410,7 +438,7 @@ class _sparse_matmul(torch.autograd.Function):
                  'STRIDE_CN': 'ldc' if trans_c else '1',
                  'NAME': 'dds_kernel',
                  'DDS': True}
-      _sparse_matmul.dds_cache[key] = triton.kernel(src, defines=defines, num_warps=[2])
+      _sparse_matmul.dds_cache[key] = triton.kernel(src, defines=defines, num_warps=[4])
     kernel = _sparse_matmul.dds_cache[key]
     # output
     CS0 = AS0
@@ -423,7 +451,7 @@ class _sparse_matmul(torch.autograd.Function):
                      a.stride(2), block, c.stride(2), 
                      a.stride(0), b.stride(0), c.stride(0),
                      a.stride(1), b.stride(1), c.stride(1),
-                     AS2, AS3, lut, locks, num_locks, 
+                     AS2, 0, 0, lut, locks, num_locks, 
                      grid = lambda opt: [width, triton.cdiv(AS2, opt.d('TM')), AS0], 
                      bench = bench)
     return c
@@ -454,7 +482,7 @@ class _sparse_matmul(torch.autograd.Function):
                  'STRIDE_CN': 'ldc' if trans_c else '1',
                  'NAME': 'dsd_kernel',
                  'DSD': True}
-      _sparse_matmul.dsd_cache[key] = triton.kernel(src, defines=defines, num_warps=[2])
+      _sparse_matmul.dsd_cache[key] = triton.kernel(src, defines=defines, num_warps=[4])
     kernel = _sparse_matmul.dsd_cache[key]
     # output
     CS0 = BS0
@@ -467,7 +495,7 @@ class _sparse_matmul(torch.autograd.Function):
                      block, b.stride(2), c.stride(2), 
                      a.stride(0), b.stride(0), c.stride(0),
                      a.stride(1), b.stride(1), c.stride(1),
-                     AS1, AS2, lut, locks, num_locks, 
+                     BS3, 0, 0, lut, locks, num_locks, 
                      grid = lambda opt: [width, triton.cdiv(BS3, opt.d('TN')), BS0], 
                      bench = bench)
     return c

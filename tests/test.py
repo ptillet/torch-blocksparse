@@ -216,7 +216,7 @@ if __name__ == '__main__':
   test_softmax(3, 2, 256, 2048, 0.5, 0.7, 16)
   # test matmul
   for mode in ['sdd', 'dsd', 'dds']:
-    test_mm(2, 1, 256, 512, 384, 0.5, mode, False, False, 16)
-    test_mm(2, 1, 256, 512, 384, 0.5, mode, True, False, 16)
-    test_mm(2, 1, 256, 512, 384, 0.5, mode, False, True, 16)
-    test_mm(2, 1, 256, 512, 384, 0.5, mode, True, True, 16)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 16)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 16)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 16)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 16)
