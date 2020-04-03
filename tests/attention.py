@@ -1,7 +1,7 @@
 import torch_blocksparse
 import torch
 
-#BatchSize, NumHeads, SeqLen, Embed = 32, 16, 128, 1024
+BatchSize, NumHeads, SeqLen, Embed = 32, 16, 128, 1024
 #BatchSize, NumHeads, SeqLen, Embed = 8, 32, 512, 1024
 #BatchSize, NumHeads, SeqLen, Embed = 16, 16, 1024, 1024
 #BatchSize, NumHeads, SeqLen, Embed = 8, 16, 4096, 1024
