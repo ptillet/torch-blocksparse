@@ -330,6 +330,3 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 training=self.training,
                 key_padding_mask=key_padding_mask, need_weights=need_weights,
                 attn_mask=attn_mask)
-
-# TODO:
-#  - move ctx_len out of the constructor. When/where to cache and construct look-up tables

@@ -4,7 +4,7 @@ import math
 
 fwd_kernels = dict()
 fwd_src = '''
-__global__ void softmax_fwd(TYPE *X, TYPE scale,
+__global__ void softmax_fwd(TYPE *X, float scale,
                             int *LUT, TYPE *M,
                             int num_blocks, int sizemax, 
                             int stride_zx, int stride_zm){ 
@@ -36,17 +36,23 @@ __global__ void softmax_fwd(TYPE *X, TYPE scale,
                         + rxm[:,newaxis] * BLOCK 
                         + rxn[newaxis,:];
 
-  // compute fused softmax
+  // load half/float input
   bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
   bool do_mask[TM, TN] = M;
   TYPE m[TM, TN] = (check && do_mask)? *pm : -INFINITY;
-  TYPE x[TM, TN] = check ? *px : -INFINITY;
-  x = x * scale + (do_mask ? m : 0);
-  TYPE xmax[TM]  = x[:, max];
-  TYPE y[TM, TN] = exp(x - xmax[:, newaxis]);
-  TYPE ysum[TM] = (check ? y : 0)[:, +];
+  TYPE x[TM, TN] =  check ? *px : -INFINITY;
 
-  // write-back
+  // compute softmax in float
+  float Fm[TM, TN] = m;
+  float Fx[TM, TN] = x;
+  Fx = Fx * scale + (do_mask ? Fm : 0);
+  float Fxmax[TM]  = Fx[:, max];
+  float Fy[TM, TN] = exp(Fx - Fxmax[:, newaxis]);
+  float Fysum[TM] = (check ? Fy : 0)[:, +];
+
+  // write-back in half/float
+  TYPE y[TM, TN] = Fy;
+  TYPE ysum[TM] = Fysum;
   *?(check)px = y / ysum[:, newaxis];
 }
 '''
@@ -54,7 +60,7 @@ __global__ void softmax_fwd(TYPE *X, TYPE scale,
 bwd_kernels = dict()
 bwd_src = '''
 
-__global__ void softmax_bwd(TYPE * X, TYPE scale,
+__global__ void softmax_bwd(TYPE * X, float scale,
                             TYPE* DX, int* LUT,
                             int sizemax, int stride_zx, int stride_zdx) {
     int pidhm = get_program_id(0);
@@ -137,7 +143,9 @@ class _sparse_softmax(torch.autograd.Function):
         # just-in-time compile kernel
         key = (dtype, TM, TN, num_warps)
         if key not in cache:
-            defines = {'TM': [TM], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block}
+            defines = {'TM': [TM], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
+                       'INFINITY': {torch.float32: 'F32_INFINITY',
+                                    torch.float16: 'F16_INFINITY'}[dtype]}
             kernel  = triton.kernel(src, defines=defines, num_warps=[num_warps])
             cache[key] = kernel
         return cache[key]
