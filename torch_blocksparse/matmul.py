@@ -16,7 +16,7 @@ src = '''
                         int stride_hb __multipleof(8),
                         int stride_hc __multipleof(8),
                         int DS0, 
-                        int SDD_K, int SDD_off_width,
+                        int SDD_K __multipleof(16), int SDD_off_width,
                         int* lut, int* locks, int nlocks) {
     /* ---------------- */
     /*    Prologue      */
@@ -297,7 +297,7 @@ class _sparse_matmul(torch.autograd.Function):
                   'STRIDE_CM': 'ldc', 
                   'STRIDE_CN': '1',
                   'SDD': True, 'TZ': 1, 'NAME': 'sdd_kernel'}
-      _sparse_matmul.sdd_cache[key] = triton.kernel(src, defines=defines, num_warps=[4])
+      _sparse_matmul.sdd_cache[key] = triton.kernel(src, defines=defines, num_warps=[1, 2, 4])
     kernel = _sparse_matmul.sdd_cache[key]
     # create output
     locks = _sparse_matmul.get_locks(2*width*AS0*num_locks)
