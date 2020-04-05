@@ -94,29 +94,33 @@ def bench_mm_openai(x, w, mode, trans_a, trans_b, layout, block, num_repeat):
   import numpy as np
   sparsity = layout.cpu().numpy()
   # create operator
-  transformer = BlocksparseTransformer(sparsity, block_size=block)
+  transformer = BlocksparseTransformer(sparsity, heads=layout.shape[0], block_size=block)
   dot_sdd_nt = transformer.nt_op
   dot_dsd_tn = transformer.tn_op
   dot_dsd_nn = transformer.nn_op
-  dot_dds_nn = None
-  #dot_dds_nn = BlocksparseMatMul(sparsity, block_size=block)
+  dot_dds_nn = None if mode != 'dds' else BlocksparseMatMul(sparsity[0,:,:], block_size=block)
   key = (mode, trans_a, trans_b)
   ops = {('sdd', False, True): dot_sdd_nt,
          ('dsd', True, False): dot_dsd_tn,
          ('dsd', False, False): dot_dsd_nn,
          ('dds', False, False): dot_dds_nn}
+  if x.dtype == torch.float32 and (mode == 'dsd' or block != 32):
+    return None
   if key not in ops:
     return None
+  if mode == 'dds' and x.shape[0]*x.shape[1] != 1:
+    return None
+  op = ops[key]
   # placeholder
-  x = x.view(1, x.shape[2], x.shape[3])
-  w = w.view(1, w.shape[2], w.shape[3])
-  sparse_shape = [layout.sum(), block, block]
+  x = x.view(x.shape[0]*x.shape[1], x.shape[2], x.shape[3])
+  w = w.view(w.shape[0]*w.shape[1], w.shape[2], w.shape[3])
+  sparse_shape = [x.shape[0], layout.shape[0], layout[0].sum(), block, block]
   vx = tf.placeholder(tf.float32, shape = sparse_shape if mode == 'dsd' else x.shape)
   vw = tf.placeholder(tf.float32, shape = sparse_shape if mode == 'dds' else w.shape)
   x = np.random.rand(*sparse_shape) if mode == 'dsd' else x.cpu().detach().numpy()
   w = np.random.rand(*sparse_shape) if mode == 'dds' else w.cpu().detach().numpy()
   # Block-sparse matrix multiplication
-  y = ops[key](vx, vw, bench=num_repeat)
+  y = op(vx, vw, bench=num_repeat)
   # Run
   sess = tf.InteractiveSession()
   sess.run(tf.global_variables_initializer())
@@ -136,6 +140,7 @@ def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block):
   probs = torch.Tensor([rho, 1-rho])
   generator = torch.distributions.categorical.Categorical(probs)
   layout = generator.sample((H, shape[0]//block, shape[1]//block))
+  layout[:] = layout[0, :, :]
   x = torch.rand((Z, H, AS0, AS1), dtype=torch.float32, requires_grad=True).cuda()
   w = torch.rand((Z, H, BS0, BS1), dtype=torch.float32, requires_grad=True).cuda()
   dy = torch.rand((Z, H, M, N), dtype=torch.float32).cuda()
@@ -146,13 +151,13 @@ def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block):
   ty, tdx, tdw = run_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   # test
   idx = (tdx - rdx).abs() > 1
-  #assert(torch.allclose(ty, ry))
-  #assert(torch.allclose(tdx, rdx))
-  #assert(torch.allclose(tdw, rdw))
+  assert(torch.allclose(ty, ry))
+  assert(torch.allclose(tdx, rdx))
+  assert(torch.allclose(tdw, rdw))
   # benchmark
   num_repeat = 100
   triton_ts = bench_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, num_repeat)
-  openai_ts = bench_mm_openai(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, num_repeat)
+  #openai_ts = bench_mm_openai(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, num_repeat)
   #flops = 2 * M * bsz * bsz * layout.sum()
   print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
 
@@ -218,8 +223,8 @@ if __name__ == '__main__':
   # test softmax
   #test_softmax(3, 2, 256, 2048, 0.5, 0.7, 16)
   # test matmul
-  for mode in ['sdd']:
-    test_mm(1, 1, 1024, 1024, 1024, 0., mode, False, True, 32)
-    #test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 16)
-    #test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 16)
-    #test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 16)
+  for mode in ['sdd', 'dsd', 'dds']:
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
