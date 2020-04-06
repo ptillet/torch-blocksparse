@@ -239,10 +239,10 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
     @staticmethod
     def _set_s2_layout(layout, h, num_blocks, block_stride, unidirectional, numverts, vertsize):
         start = block_stride - (1 + h % numverts) * vertsize
-        for i in range(0, blk_dim):
-            end = i if unidirectional else num_block
+        for i in range(0, num_blocks):
+            end = i if unidirectional else num_blocks
             for j in range(start, end, block_stride):
-                for k in range(j, min(j + vertsize, num_block)):
+                for k in range(j, min(j + vertsize, num_blocks)):
                     layout[h, i, k] = 1
         return layout
 
