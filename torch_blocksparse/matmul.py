@@ -287,7 +287,7 @@ class _sparse_matmul(torch.autograd.Function):
     BS3 = b.size(2 if trans_b else 3)
     dtype = a.dtype
     # create kernel
-    key = (block, a.dtype, b.type, trans_a, trans_b, trans_c)
+    key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c)
     if key not in _sparse_matmul.sdd_cache:
       defines =  {'TM': block, 'TN': block, 'TK': 16, 'TYPE': dtype,
                   'STRIDE_AM': '1'    if trans_a else 'lda', 
