@@ -7,8 +7,9 @@ def MakeMultiHeadSparseAttention(mode, block, stride, unidirectional, numverts, 
     return sparse_mha
 
 use_half = False
-use_padding_mask = True
-BatchSize, NumHeads, SeqLen, Embed = 32, 16, 128, 1024
+use_padding_mask = False
+BatchSize, NumHeads, SeqLen, Embed = 8, 4, 128, 256
+#BatchSize, NumHeads, SeqLen, Embed = 32, 16, 128, 1024
 #BatchSize, NumHeads, SeqLen, Embed = 8, 32, 512, 1024
 #BatchSize, NumHeads, SeqLen, Embed = 16, 16, 1024, 1024
 #BatchSize, NumHeads, SeqLen, Embed = 8, 16, 4096, 1024
