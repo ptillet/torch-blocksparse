@@ -165,6 +165,10 @@ def multi_head_attention_forward(query,                           # type: Tensor
         assert key_padding_mask.size(0) == bsz
         assert key_padding_mask.size(1) == src_len
 
+    if attn_mask is not None:
+        assert attn_mask.size(0) == src_len
+        assert attn_mask.size(1) == src_len
+
     if add_zero_attn:
         src_len += 1
         k = torch.cat([k, torch.zeros((k.size(0), 1) + k.size()[2:], dtype=k.dtype, device=k.device)], dim=1)
@@ -214,10 +218,7 @@ def multi_head_attention_forward(query,                           # type: Tensor
     v = v.view(bsz, num_heads, v.shape[1], v.shape[2])
     # attention scores
     attn_output_weights = sparse_dot_sdd_nt(q, k)
-    if key_padding_mask is not None:
-      attn_output_weights = sparse_softmax(attn_output_weights, mask=key_padding_mask, use_padding_mask=True)
-    else:
-      attn_output_weights = sparse_softmax(attn_output_weights, mask=attn_mask, use_padding_mask=False)
+    attn_output_weights = sparse_softmax(attn_output_weights, key_padding_mask=key_padding_mask, attn_mask=attn_mask)
     # outputs
     attn_output = sparse_dot_dsd_nn(attn_output_weights, v)
     attn_output = attn_output.view(bsz*num_heads, attn_output.shape[2], attn_output.shape[3])
@@ -225,7 +226,7 @@ def multi_head_attention_forward(query,                           # type: Tensor
     attn_output = linear(attn_output, out_proj_weight, out_proj_bias)
     return attn_output, None
 
- 
+
 
 class MultiheadAttention(nn.modules.activation.MultiheadAttention):
 
@@ -238,7 +239,7 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 for k in range(i, (j + 1 if unidirectional else i + block_stride)):
                     layout[h, j, k] = 1
         return layout
-    
+
     @staticmethod
     def _set_s2_layout(layout, h, num_blocks, block_stride, unidirectional, numverts, vertsize):
         start = block_stride - (1 + h % numverts) * vertsize
@@ -271,21 +272,21 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
             self.unidirectional = unidirectional
             self.numverts = numverts
             self.vertsize = vertsize
-    
+
     ops = dict()
 
     # add to cache
     def get_ops(self, L):
         if L not in MultiheadAttention.ops:
             sparsity = self.sparsity
-            layout = MultiheadAttention._make_layout(self.num_heads, L // sparsity.block, sparsity.mode, 
+            layout = MultiheadAttention._make_layout(self.num_heads, L // sparsity.block, sparsity.mode,
                                                     sparsity.stride // sparsity.block, sparsity.unidirectional,
                                                     sparsity.numverts, sparsity.vertsize)
-            sparse_dot_sdd_nt = torch_blocksparse.SparseMatMul(layout, sparsity.block, 'sdd', 
+            sparse_dot_sdd_nt = torch_blocksparse.SparseMatMul(layout, sparsity.block, 'sdd',
                                                                trans_a=False, trans_b=True)
             sparse_dot_dsd_nn = torch_blocksparse.SparseMatMul(layout, sparsity.block, 'dsd',
                                                                trans_a=False, trans_b=False)
-            sparse_softmax = torch_blocksparse.SparseSoftmax(layout, sparsity.block) 
+            sparse_softmax = torch_blocksparse.SparseSoftmax(layout, sparsity.block)
             MultiheadAttention.ops[L] = (sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax)
         return MultiheadAttention.ops[L]
 
@@ -296,14 +297,14 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
 
         super(MultiheadAttention, self).__init__(embed_dim, num_heads, dropout, bias, add_bias_kv, add_zero_attn, kdim, vdim)
         self.sparsity = sparsity
-        
 
-    # forward pass    
+
+    # forward pass
     def forward(self, query, key, value, key_padding_mask=None,
                 need_weights=True, attn_mask=None):
         # check that operation is supported
         if query.shape != key.shape or key.shape != value.shape:
-            raise NotImplementedError('only self-attention is supported for now')        
+            raise NotImplementedError('only self-attention is supported for now')
         if need_weights:
             raise NotImplementedError('returning weights is not supported for now')
         # cache look-up table computations etc
