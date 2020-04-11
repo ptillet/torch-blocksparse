@@ -6,8 +6,8 @@ fwd_kernels = dict()
 fwd_src = '''
 __global__ void softmax_fwd(TYPE *X, float scale,
                             int *LUT, TYPE *M,
-                            int num_blocks, int sizemax, 
-                            int stride_zx, int stride_zm){ 
+                            int num_blocks, int sizemax,
+                            int stride_zx, int stride_zm){
   int pidhm = get_program_id(0);
   int pidz = get_program_id(1);
 
@@ -27,13 +27,19 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   int columnid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks);
 
   // initialize pointers
-  TYPE* pm[TM, TN]  = M + pidz * stride_zm 
-                        + columnid * BLOCK
-                        + rxn[newaxis, :];
+#ifdef USE_PADDING_MASK
+  TYPE* pm[TM, TN] = M + pidz * stride_zm
+                   + columnid * BLOCK
+                   + rxn[newaxis, :];
+#else
+  TYPE* pm[TM, TN] = M + (rbm[:, newaxis] + rxm[:, newaxis]) * stride_zm
+                   + columnid * BLOCK
+                   + rxn[newaxis, :];
+#endif
 
   TYPE* px[TM, TN]  = X + pidz * stride_zx
-                        + blockid * BLOCK * BLOCK 
-                        + rxm[:,newaxis] * BLOCK 
+                        + blockid * BLOCK * BLOCK
+                        + rxm[:,newaxis] * BLOCK
                         + rxn[newaxis,:];
 
   // load half/float input
@@ -128,7 +134,7 @@ class _sparse_softmax(torch.autograd.Function):
         return lut, sizes.max()
 
     @staticmethod
-    def make_kernel(cache, src, max_k, dtype, block):
+    def make_kernel(cache, src, max_k, dtype, block, use_padding_mask):
         # pad tile to cover the entire reduction
         params = {16384: (1, 32768, 16),
                   8192:  (1, 16384, 16),
@@ -141,19 +147,21 @@ class _sparse_softmax(torch.autograd.Function):
                                     'are not yet implemented')
         TM, TN, num_warps = params[bound]
         # just-in-time compile kernel
-        key = (dtype, TM, TN, num_warps)
+        key = (dtype, TM, TN, num_warps, use_padding_mask)
         if key not in cache:
             defines = {'TM': [TM], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
                        'INFINITY': {torch.float32: 'F32_INFINITY',
-                                    torch.float16: 'F16_INFINITY'}[dtype]}
+                                    torch.float16: 'F16_INFINITY'}[dtype],
+                       'USE_PADDING_MASK' : use_padding_mask}
             kernel  = triton.kernel(src, defines=defines, num_warps=[num_warps])
             cache[key] = kernel
+
         return cache[key]
 
     @staticmethod
-    def forward(ctx, x, scale, mask, layout, block, lut, num_blocks, maxlut, bench, time):
+    def forward(ctx, x, scale, mask, use_padding_mask, layout, block, lut, num_blocks, maxlut, bench, time):
         # run kernel
-        kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block)
+        kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block, use_padding_mask)
         grid = lambda opt: [triton.cdiv(layout.shape[0] * layout.shape[1] * block, opt.d('TM')),
                             x.shape[0]]
         # handle None mask
@@ -170,7 +178,7 @@ class _sparse_softmax(torch.autograd.Function):
         ctx.block = block
         ctx.maxlut = maxlut
         ctx.scale = scale
-        return x
+        return x  
     
     @staticmethod
     def backward(ctx, dx):
@@ -187,19 +195,21 @@ class _sparse_softmax(torch.autograd.Function):
         return dx, None, None, None, None, None, None, None, None, None
 
 class SparseSoftmax:
-    
+
     def __init__(self, layout, block, bench = False):
         self.fwd_lut, self.fwd_maxlut = _sparse_softmax.make_lut(layout, block)
         self.num_blocks = layout.sum()
         self.layout = layout
         self.block = block
         self.bench = bench
-    
-    def __call__(self, x, scale = 1., mask = None):
+
+    def __call__(self, x, scale = 1., key_padding_mask = None, attn_mask = None):
         time_y = [None]
-        x = _sparse_softmax.apply(x, scale, mask,
+        mask = key_padding_mask if key_padding_mask is not None else attn_mask
+        use_padding_mask = True if key_padding_mask is not None else False
+        x = _sparse_softmax.apply(x, scale, mask, use_padding_mask,
                                   self.layout, self.block,
-                                  self.fwd_lut, self.num_blocks, 
+                                  self.fwd_lut, self.num_blocks,
                                   self.fwd_maxlut, self.bench, time_y)
         self.time_y = time_y[0]
         return x
