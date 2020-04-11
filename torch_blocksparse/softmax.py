@@ -155,7 +155,7 @@ class _sparse_softmax(torch.autograd.Function):
                        'USE_PADDING_MASK' : use_padding_mask}
             kernel  = triton.kernel(src, defines=defines, num_warps=[num_warps])
             cache[key] = kernel
-        print ("key: ", key)
+
         return cache[key]
 
     @staticmethod
@@ -207,7 +207,6 @@ class SparseSoftmax:
         time_y = [None]
         mask = key_padding_mask if key_padding_mask is not None else attn_mask
         use_padding_mask = True if key_padding_mask is not None else False
-        print ("use padding mask: ", use_padding_mask)
         x = _sparse_softmax.apply(x, scale, mask, use_padding_mask,
                                   self.layout, self.block,
                                   self.fwd_lut, self.num_blocks,
