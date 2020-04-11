@@ -7,7 +7,8 @@ fwd_src = '''
 __global__ void softmax_fwd(TYPE *X, float scale,
                             int *LUT, TYPE *M,
                             int num_blocks, int sizemax, 
-                            int stride_zx, int stride_zm){ 
+                            int stride_zx, int stride_zm,
+                            bool use_padding_mask){ 
   int pidhm = get_program_id(0);
   int pidz = get_program_id(1);
 
@@ -27,9 +28,10 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   int columnid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks);
 
   // initialize pointers
-  TYPE* pm[TM, TN]  = M + pidz * stride_zm 
-                        + columnid * BLOCK
-                        + rxn[newaxis, :];
+  TYPE* pm[TM, TN] = M
+                   + (use_padding_mask ? pidz : (rbm + rxm)[:, newaxis]) * stride_zm
+                   + columnid * BLOCK
+                   + rxn[newaxis, :];
 
   TYPE* px[TM, TN]  = X + pidz * stride_zx
                         + blockid * BLOCK * BLOCK 
@@ -151,7 +153,7 @@ class _sparse_softmax(torch.autograd.Function):
         return cache[key]
 
     @staticmethod
-    def forward(ctx, x, scale, mask, layout, block, lut, num_blocks, maxlut, bench, time):
+    def forward(ctx, x, scale, mask, use_padding_mask, layout, block, lut, num_blocks, maxlut, bench, time):
         # run kernel
         kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block)
         grid = lambda opt: [triton.cdiv(layout.shape[0] * layout.shape[1] * block, opt.d('TM')),
@@ -159,10 +161,11 @@ class _sparse_softmax(torch.autograd.Function):
         # handle None mask
         stride_zm = 0 if mask is None else mask.stride(0)
         mask = torch.empty(0, dtype=x.dtype, device=x.device) if mask is None else mask
+        use_padding_mask = True if (mask and mask.size(0)
         # run kernel
         time[0] = kernel(x, scale, lut, mask,\
                          num_blocks, maxlut,\
-                         x.stride(0), stride_zm,\
+                         x.stride(0), stride_zm, use_padding_mask,\
                          grid=grid, bench=bench)
         # save to context
         ctx.mark_dirty(x)
@@ -195,9 +198,9 @@ class SparseSoftmax:
         self.block = block
         self.bench = bench
     
-    def __call__(self, x, scale = 1., mask = None):
+    def __call__(self, x, scale = 1., mask = None, use_padding_mask = True):
         time_y = [None]
-        x = _sparse_softmax.apply(x, scale, mask,
+        x = _sparse_softmax.apply(x, scale, mask, use_padding_mask,
                                   self.layout, self.block,
                                   self.fwd_lut, self.num_blocks, 
                                   self.fwd_maxlut, self.bench, time_y)
