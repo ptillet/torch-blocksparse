@@ -214,7 +214,10 @@ def multi_head_attention_forward(query,                           # type: Tensor
     v = v.view(bsz, num_heads, v.shape[1], v.shape[2])
     # attention scores
     attn_output_weights = sparse_dot_sdd_nt(q, k)
-    attn_output_weights = sparse_softmax(attn_output_weights, mask=key_padding_mask)
+    if key_padding_mask is not None:
+      attn_output_weights = sparse_softmax(attn_output_weights, mask=key_padding_mask, use_padding_mask=True)
+    else:
+      attn_output_weights = sparse_softmax(attn_output_weights, mask=attn_mask, use_padding_mask=False)
     # outputs
     attn_output = sparse_dot_dsd_nn(attn_output_weights, v)
     attn_output = attn_output.view(bsz*num_heads, attn_output.shape[2], attn_output.shape[3])
@@ -300,9 +303,7 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 need_weights=True, attn_mask=None):
         # check that operation is supported
         if query.shape != key.shape or key.shape != value.shape:
-            raise NotImplementedError('only self-attention is supported for now')
-        if attn_mask is not None:
-            raise NotImplementedError('attention mask is not supported for now')
+            raise NotImplementedError('only self-attention is supported for now')        
         if need_weights:
             raise NotImplementedError('returning weights is not supported for now')
         # cache look-up table computations etc
