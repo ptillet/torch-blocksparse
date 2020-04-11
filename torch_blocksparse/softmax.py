@@ -161,7 +161,6 @@ class _sparse_softmax(torch.autograd.Function):
         # handle None mask
         stride_zm = 0 if mask is None else mask.stride(0)
         mask = torch.empty(0, dtype=x.dtype, device=x.device) if mask is None else mask
-        use_padding_mask = True if (mask and mask.size(0)
         # run kernel
         time[0] = kernel(x, scale, lut, mask,\
                          num_blocks, maxlut,\
