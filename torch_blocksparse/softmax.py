@@ -65,8 +65,8 @@ __global__ void softmax_fwd(TYPE *X, float scale,
 #endif
   float Fx[TM, TN] = x;
   Fx = Fx * scale; // apply scale
-  Fx = Fx + (do_kp_mask ? Fkp_m : -INFINITY); // apply key padding mask
-  Fx = Fx + (do_attn_mask ? Fattn_m : -INFINITY); // apply attention mask
+  Fx = Fx + (do_kp_mask ? Fkp_m : 0); // apply key padding mask
+  Fx = Fx + (do_attn_mask ? Fattn_m : 0); // apply attention mask
   float Fxmax[TM]  = Fx[:, max];
   float Fy[TM, TN] = exp(Fx - Fxmax[:, newaxis]);
   float Fysum[TM] = (check ? Fy : 0)[:, +];
