@@ -25,8 +25,9 @@ torch_kp_mask = torch.randint(0, 2, (BatchSize, SeqLen), dtype=torch.bool).cuda(
 triton_kp_mask = torch_kp_mask.type(torch.float32)
 triton_kp_mask[triton_kp_mask==1.] = float('-inf')
 # attention mask
-torch_attn_mask = torch.randint(0, 2, (SeqLen, SeqLen), dtype=torch.float32).cuda()
-torch_attn_mask[torch_attn_mask==1.] = float('-inf')
+triton_attn_mask = torch.randint(0, 2, (SeqLen, SeqLen), dtype=torch.float32).cuda()
+torch_attn_mask = 1 - triton_attn_mask
+torch_attn_mask[torch_attn_mask==1] = float('-inf')
 # to half precision
 if use_half:
     sparse_mha = sparse_mha.half()
@@ -36,7 +37,9 @@ if use_half:
     value = value.half()
     triton_kp_mask = triton_kp_mask.half()
 # run modules
-sparse_out, _ = sparse_mha(query, key, value, key_padding_mask=triton_kp_mask, attn_mask=torch_attn_mask, need_weights=False)
+sparse_out, _ = sparse_mha(query, key, value, 
+                           key_padding_mask=triton_kp_mask, attn_mask=triton_attn_mask, 
+                           key_padding_mask_mode='add', attn_mask_mode='mul', need_weights=False)
 dense_out, _ = dense_mha(query, key, value, key_padding_mask=torch_kp_mask, attn_mask=torch_attn_mask, need_weights=False)
 if use_half:
     assert torch.allclose(sparse_out, dense_out, rtol=1e-3, atol=1e-3)

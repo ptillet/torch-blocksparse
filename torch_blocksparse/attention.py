@@ -29,7 +29,9 @@ def multi_head_attention_forward(query,                           # type: Tensor
                                  k_proj_weight=None,              # type: Optional[Tensor]
                                  v_proj_weight=None,              # type: Optional[Tensor]
                                  static_k=None,                   # type: Optional[Tensor]
-                                 static_v=None                    # type: Optional[Tensor]
+                                 static_v=None,                   # type: Optional[Tensor]
+                                 key_padding_mask_mode='add',     # type: String ['add', 'mul']
+                                 attn_mask_mode='add'             # type: String ['add', 'mul']
                                  ):
     # type: (...) -> Tuple[Tensor, Optional[Tensor]]
 
@@ -218,7 +220,8 @@ def multi_head_attention_forward(query,                           # type: Tensor
     v = v.view(bsz, num_heads, v.shape[1], v.shape[2])
     # attention scores
     attn_output_weights = sparse_dot_sdd_nt(q, k)
-    attn_output_weights = sparse_softmax(attn_output_weights, key_padding_mask=key_padding_mask, attn_mask=attn_mask)
+    attn_output_weights = sparse_softmax(attn_output_weights, key_padding_mask=key_padding_mask, attn_mask=attn_mask,
+                                         key_padding_mask_mode=key_padding_mask_mode, attn_mask_mode=attn_mask_mode)
     # outputs
     attn_output = sparse_dot_dsd_nn(attn_output_weights, v)
     attn_output = attn_output.view(bsz*num_heads, attn_output.shape[2], attn_output.shape[3])
@@ -301,7 +304,8 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
 
     # forward pass
     def forward(self, query, key, value, key_padding_mask=None,
-                need_weights=True, attn_mask=None):
+                need_weights=True, attn_mask=None,
+                key_padding_mask_mode='add', attn_mask_mode='mul'):
         # check that operation is supported
         if query.shape != key.shape or key.shape != value.shape:
             raise NotImplementedError('only self-attention is supported for now')
@@ -321,7 +325,8 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 key_padding_mask=key_padding_mask, need_weights=need_weights,
                 attn_mask=attn_mask, use_separate_proj_weight=True,
                 q_proj_weight=self.q_proj_weight, k_proj_weight=self.k_proj_weight,
-                v_proj_weight=self.v_proj_weight)
+                v_proj_weight=self.v_proj_weight,
+                key_padding_mask_mode=key_padding_mask_mode, attn_mask_mode=attn_mask_mode)
         else:
             return multi_head_attention_forward(
                 query, key, value, self.embed_dim, self.num_heads,
@@ -331,4 +336,5 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax,
                 training=self.training,
                 key_padding_mask=key_padding_mask, need_weights=need_weights,
-                attn_mask=attn_mask)
+                attn_mask=attn_mask,
+                key_padding_mask_mode=key_padding_mask_mode, attn_mask_mode=attn_mask_mode)
