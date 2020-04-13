@@ -216,7 +216,7 @@ class _sparse_softmax(torch.autograd.Function):
         grid = lambda opt: [triton.cdiv(layout.shape[0] * layout.shape[1] * ctx.block, opt.d('TM')),
                             x.shape[0]]
         kernel(x, ctx.scale, dx, lut, ctx.maxlut, x.stride(0), dx.stride(0), grid=grid)
-        return dx, None, None, None, None, None, None, None, None, None
+        return dx, None, None, None, None, None, None, None, None, None, None, None, None
 
 class SparseSoftmax:
     
