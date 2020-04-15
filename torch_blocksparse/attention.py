@@ -341,12 +341,11 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 attn_mask=attn_mask,
                 key_padding_mask_mode=self.key_padding_mask_mode, attn_mask_mode=self.attn_mask_mode)
 
-def replace_mha(model):
+def replace_mha(model, info):
     for child_name, child in model.named_children():
         if isinstance(child, nn.modules.activation.MultiheadAttention):
             add_bias_kv = child.bias_k is not None
             device = child.in_proj_weight.device
-            info = MultiheadAttention.SparsityInfo(mode='dense', block=32)
             mha = MultiheadAttention(child.embed_dim, child.num_heads, info,
                                      dropout=child.dropout, add_bias_kv=add_bias_kv, 
                                      add_zero_attn=child.add_zero_attn, kdim=child.kdim,
@@ -356,4 +355,4 @@ def replace_mha(model):
                 yparam.data.copy_(xparam.data)
             setattr(model, child_name, mha)
         else:
-            replace_mha(child)
+            replace_mha(child, info)

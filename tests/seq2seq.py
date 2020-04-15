@@ -89,13 +89,13 @@ def batchify(data, bsz):
     data = data.view(bsz, -1).t().contiguous()
     return data.to(device)
 
-batch_size = 32
-eval_batch_size = 10
+batch_size = 4
+eval_batch_size = 4
 train_data = batchify(train_txt, batch_size)
 val_data = batchify(val_txt, eval_batch_size)
 test_data = batchify(test_txt, eval_batch_size)
 
-bptt = 128
+bptt = 1024
 def get_batch(source, i):
     seq_len = min(bptt, len(source) - 1 - i)
     data = source[i:i+seq_len]
@@ -107,12 +107,13 @@ def get_batch(source, i):
 ntokens = len(TEXT.vocab.stoi) # the size of vocabulary
 emsize = 768 # embedding dimension
 nhid = 768 # the dimension of the feedforward network model in nn.TransformerEncoder
-nlayers = 8 # the number of nn.TransformerEncoderLayer in nn.TransformerEncoder
+nlayers = 4 # the number of nn.TransformerEncoderLayer in nn.TransformerEncoder
 nhead = 12 # the number of heads in the multiheadattention models
 dropout = 0. # the dropout value
 torch.manual_seed(0)
 model = TransformerModel(ntokens, emsize, nhead, nhid, nlayers, dropout).to(device)
-#torch_blocksparse.replace_mha(model)
+info = torch_blocksparse.MultiheadAttention.SparsityInfo(mode='fixed', block=32, numverts=4, vertsize=1)
+torch_blocksparse.replace_mha(model, info)
 torch.manual_seed(0)
 
 # Run the model
@@ -141,10 +142,10 @@ def train():
             cur_loss = total_loss / log_interval
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | '
-                  'lr {:02.2f} | ms/batch {:5.2f}'
+                  'lr {:02.2f} | ms/batch {:5.2f} | memory {:5.2f}GB | '
                   'loss {:5.2f} | ppl {:8.2f}'.format(
                     epoch, batch, len(train_data) // bptt, scheduler.get_lr()[0],
-                    elapsed * 1000 / log_interval,
+                    elapsed * 1000 / log_interval, torch.cuda.memory_allocated()*1e-9,
                     cur_loss, math.exp(cur_loss)))
             total_loss = 0
             start_time = time.time()

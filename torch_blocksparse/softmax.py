@@ -186,8 +186,8 @@ class _sparse_softmax(torch.autograd.Function):
         # run kernel
         kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block, 
                                              kp_mask_mode, attn_mask_mode)
-        grid = lambda opt: [triton.cdiv(spdims[0] * spdims[1] * block, opt.d('TM')),
-                            x.shape[0]]
+        M = x.shape[0]
+        grid = lambda opt: [triton.cdiv(spdims[0] * spdims[1] * block, opt.d('TM')), M]
         # handle None key_padding_mask
         stride_zkpm = 0 if key_padding_mask is None else key_padding_mask.stride(0)
         key_padding_mask = torch.empty(0, dtype=x.dtype, device=x.device) if key_padding_mask is None else key_padding_mask
@@ -217,8 +217,8 @@ class _sparse_softmax(torch.autograd.Function):
         # run kernel
         kernel = _sparse_softmax.make_kernel(bwd_kernels, bwd_src, ctx.maxlut*ctx.block, x.dtype, ctx.block, 
                                              ctx.kp_mask_mode, ctx.attn_mask_mode)
-        grid = lambda opt: [triton.cdiv(ctx.spdims[0] * ctx.spdims[1] * ctx.block, opt.d('TM')),
-                            x.shape[0]]
+        M = x.shape[0]
+        grid = lambda opt: [triton.cdiv(ctx.spdims[0] * ctx.spdims[1] * ctx.block, opt.d('TM')), M]
         kernel(x, ctx.scale, dx, lut, ctx.maxlut, x.stride(0), dx.stride(0), grid=grid)
         return dx, None, None, None, None, None, None, None, None, None, None, None, None
 
