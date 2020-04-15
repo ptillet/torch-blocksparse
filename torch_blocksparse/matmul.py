@@ -257,9 +257,9 @@ class _sparse_matmul(torch.autograd.Function):
   # SPARSE = DENSE x DENSE #
   ##########################
   @staticmethod
-  def make_sdd_lut(mask, block):
-    nnz = torch.nonzero(mask)
-    width = mask.sum()
+  def make_sdd_lut(layout, block):
+    nnz = torch.nonzero(layout)
+    width = layout.sum()
     # create lut
     h = nnz[:, 0]
     i = nnz[:, 1]
@@ -272,7 +272,7 @@ class _sparse_matmul(torch.autograd.Function):
 
   @staticmethod
   def _sdd_matmul(a, b, trans_a, trans_b, trans_c,
-                  mask, block, lut, num_locks, width, 
+                  spdims, block, lut, num_locks, width, 
                   bench, time):
     if trans_c:
       a, b = b, a
@@ -324,12 +324,12 @@ class _sparse_matmul(torch.autograd.Function):
   # DENSE = DENSE x SPARSE #
   ##########################
   
-  # Given a binary mask of 0s and 1s,
+  # Given a binary layout of 0s and 1s,
   # Construct look-up table for efficient execution on GPUs
   @staticmethod
-  def make_dxx_lut(mask, block, step, trans):
+  def make_dxx_lut(layout, block, step, trans):
     # load-balancing
-    _empty = torch.tensor([], dtype=torch.int64, device=mask.device)
+    _empty = torch.tensor([], dtype=torch.int64, device=layout.device)
     segments = _empty.clone()
     column   = _empty.clone()
     depth    = _empty.clone()
@@ -338,11 +338,11 @@ class _sparse_matmul(torch.autograd.Function):
     offsets  = _empty.clone()
     current_offset = 0
     current_maxid = 0
-    for z in range(mask.size(0)):
+    for z in range(layout.size(0)):
       if trans:
-        sizes = torch.sum(mask[z, :, :], 1)
+        sizes = torch.sum(layout[z, :, :], 1)
       else:
-        sizes = torch.sum(mask[z, :, :], 0)
+        sizes = torch.sum(layout[z, :, :], 0)
       z_segments, z_column, z_lockid, z_maxid, z_offsets = _sparse_matmul.load_balance(sizes, block)
       z_depth = z * torch.ones_like(z_segments)
       z_lockid[z_lockid > 0] += current_maxid
@@ -354,13 +354,13 @@ class _sparse_matmul(torch.autograd.Function):
       maxid    = torch.cat((maxid,     z_maxid))
       offsets  = torch.cat((offsets,   current_offset + z_offsets))
       lockid   = torch.cat((lockid,    z_lockid))
-      current_offset += mask[z, :, :].sum()
+      current_offset += layout[z, :, :].sum()
     segments *= step
     # pointer increments
     if trans:
-      nnz = torch.nonzero(mask)
+      nnz = torch.nonzero(layout)
     else:
-      nnz = torch.nonzero(mask.transpose(1, 2))
+      nnz = torch.nonzero(layout.transpose(1, 2))
     num_blocks = nnz.size(0)
     offsets = torch.min(offsets, (num_blocks - 1)*torch.ones_like(offsets))
     idx = nnz[:, 2]*block
@@ -380,11 +380,11 @@ class _sparse_matmul(torch.autograd.Function):
     else:
       widx = _empty.clone()
       current_offset = 0
-      for z in range(mask.size(0)):
-        maskw = mask[z, :, :].clone()
-        msum = maskw.sum()
-        maskw[maskw > 0] = 1 + torch.arange(msum)
-        widx = torch.cat((widx, current_offset + maskw.T[maskw.T > 0] - 1))
+      for z in range(layout.size(0)):
+        layoutw = layout[z, :, :].clone()
+        msum = layoutw.sum()
+        layoutw[layoutw > 0] = 1 + torch.arange(msum)
+        widx = torch.cat((widx, current_offset + layoutw.T[layoutw.T > 0] - 1))
         current_offset += msum
     widx = widx * block * block
     wincs = widx.clone()
@@ -414,16 +414,16 @@ class _sparse_matmul(torch.autograd.Function):
 
   @staticmethod
   def _dds_matmul(a, b, trans_a, trans_b, trans_c,
-              mask, block, lut, num_locks, width, 
+              spdims, block, lut, num_locks, width, 
               bench, time):
     # shapes / dtypes
     AS0 = a.size(0)
     AS1 = a.size(1)
     AS2 = a.size(3 if trans_a else 2)
     AS3 = a.size(2 if trans_a else 3)
-    BS0 = mask.size(0)
-    BS1 = block * mask.size(2 if trans_b else 1)
-    BS2 = block * mask.size(1 if trans_b else 2)
+    BS0 = spdims[0]
+    BS1 = block * spdims[2 if trans_b else 1]
+    BS2 = block * spdims[1 if trans_b else 2]
     dtype = a.dtype
     # kernel
     key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c)
@@ -458,12 +458,12 @@ class _sparse_matmul(torch.autograd.Function):
   
   @staticmethod
   def _dsd_matmul(a, b, trans_a, trans_b, trans_c,
-                  mask, block, lut, num_locks, width,
+                  spdims, block, lut, num_locks, width,
                   bench, time):
     # shapes / dtypes
-    AS0 = mask.size(0)
-    AS1 = block * mask.size(2 if trans_a else 1)
-    AS2 = block * mask.size(1 if trans_a else 2)
+    AS0 = spdims[0]
+    AS1 = block * spdims[2 if trans_a else 1]
+    AS2 = block * spdims[1 if trans_a else 2]
     BS0 = b.size(0)
     BS1 = b.size(1)
     BS2 = b.size(3 if trans_b else 2)
@@ -506,11 +506,11 @@ class _sparse_matmul(torch.autograd.Function):
 
   @staticmethod
   def forward(ctx, a, b, trans_a, trans_b, trans_c,
-              mode, mask, block,
+              mode, spdims, block,
               c_lut, c_num_locks, c_width, c_bench, c_time,
               da_lut, da_num_locks, da_width, da_bench, da_time,
               db_lut, db_num_locks, db_width, db_bench, db_time):
-    c = _sparse_matmul.fn[mode](a, b, trans_a, trans_b, trans_c, mask, block, 
+    c = _sparse_matmul.fn[mode](a, b, trans_a, trans_b, trans_c, spdims, block, 
                                 c_lut, c_num_locks, c_width, c_bench, c_time)
     # save for backward
     ctx.save_for_backward(a, da_lut, b, db_lut)
@@ -523,7 +523,7 @@ class _sparse_matmul(torch.autograd.Function):
     ctx.db_bench = db_bench
     ctx.db_time = db_time
     ctx.mode = mode
-    ctx.mask = mask
+    ctx.spdims = spdims
     ctx.block = block
     ctx.trans_a = trans_a
     ctx.trans_b = trans_b
@@ -537,12 +537,12 @@ class _sparse_matmul(torch.autograd.Function):
     # gradients w.r.t. a
     if ctx.needs_input_grad[0]:
       mode_da = mode[1] + mode[0] + mode[2]
-      da = _sparse_matmul.fn[mode_da](dc, b, False, not ctx.trans_b, ctx.trans_a, ctx.mask, ctx.block,
+      da = _sparse_matmul.fn[mode_da](dc, b, False, not ctx.trans_b, ctx.trans_a, ctx.spdims, ctx.block,
                          da_lut, ctx.da_num_locks, ctx.da_width, ctx.da_bench, ctx.da_time)
     # gradients w.r.t. b
     if ctx.needs_input_grad[1]:
       mode_db = mode[2] + mode[1] + mode[0]
-      db = _sparse_matmul.fn[mode_db](a, dc, not ctx.trans_a, False, ctx.trans_b, ctx.mask, ctx.block,
+      db = _sparse_matmul.fn[mode_db](a, dc, not ctx.trans_a, False, ctx.trans_b, ctx.spdims, ctx.block,
                          db_lut, ctx.db_num_locks, ctx.db_width, ctx.db_bench, ctx.db_time)
     return da, db, None, None, None,\
            None, None, None,\
@@ -552,35 +552,35 @@ class _sparse_matmul(torch.autograd.Function):
 
 class SparseMatMul:
 
-  def __init__(self, mask, block, mode, trans_a = False, trans_b = False, bench = False):
+  def __init__(self, layout, block, mode, trans_a = False, trans_b = False, bench = False):
     if mode not in ['sdd', 'dsd', 'dds']:
       raise NotImplementedError('Supported modes are: sdd, dsd, dds')
     # C look-up table
     if mode == 'sdd':
-      self.c_lut, self.c_num_locks, self.c_width = _sparse_matmul.make_sdd_lut(mask, block)
+      self.c_lut, self.c_num_locks, self.c_width = _sparse_matmul.make_sdd_lut(layout, block)
     elif mode == 'dsd':
-      self.c_lut, self.c_num_locks, self.c_width = _sparse_matmul.make_dxx_lut(mask, block, 8, not trans_a)
+      self.c_lut, self.c_num_locks, self.c_width = _sparse_matmul.make_dxx_lut(layout, block, 8, not trans_a)
     elif mode == 'dds':
-      self.c_lut, self.c_num_locks, self.c_width = _sparse_matmul.make_dxx_lut(mask, block, 8, trans_b)
+      self.c_lut, self.c_num_locks, self.c_width = _sparse_matmul.make_dxx_lut(layout, block, 8, trans_b)
     # DA look-up table
     if mode == 'sdd':
-      self.da_lut, self.da_num_locks, self.da_width = _sparse_matmul.make_dxx_lut(mask, block, 8, True)
+      self.da_lut, self.da_num_locks, self.da_width = _sparse_matmul.make_dxx_lut(layout, block, 8, True)
     elif mode == 'dsd':
-      self.da_lut, self.da_num_locks, self.da_width = _sparse_matmul.make_sdd_lut(mask, block)
+      self.da_lut, self.da_num_locks, self.da_width = _sparse_matmul.make_sdd_lut(layout, block)
     elif mode == 'dds':
-      self.da_lut, self.da_num_locks, self.da_width = _sparse_matmul.make_dxx_lut(mask, block, 8, not trans_b)
+      self.da_lut, self.da_num_locks, self.da_width = _sparse_matmul.make_dxx_lut(layout, block, 8, not trans_b)
     # DB look-up table
     if mode == 'sdd':
-      self.db_lut, self.db_num_locks, self.db_width = _sparse_matmul.make_dxx_lut(mask, block, 8, False)
+      self.db_lut, self.db_num_locks, self.db_width = _sparse_matmul.make_dxx_lut(layout, block, 8, False)
     elif mode == 'dsd':
-      self.db_lut, self.db_num_locks, self.db_width = _sparse_matmul.make_dxx_lut(mask, block, 8, trans_a)
+      self.db_lut, self.db_num_locks, self.db_width = _sparse_matmul.make_dxx_lut(layout, block, 8, trans_a)
     elif mode == 'dds':
-      self.db_lut, self.db_num_locks, self.db_width = _sparse_matmul.make_sdd_lut(mask, block)
+      self.db_lut, self.db_num_locks, self.db_width = _sparse_matmul.make_sdd_lut(layout, block)
     # attributes
     self.trans_a = trans_a
     self.trans_b = trans_b
     self.mode = mode
-    self.mask = mask
+    self.spdims = layout.shape
     self.block = block
     # timings
     self.bench = bench
@@ -607,7 +607,7 @@ class SparseMatMul:
     b = SparseMatMul._pad_shape(b, self.mode == 'dds')
     # execute
     c = _sparse_matmul.apply(a, b, self.trans_a, self.trans_b, False,
-                              self.mode, self.mask, self.block,
+                              self.mode, self.spdims, self.block,
                               self.c_lut, self.c_num_locks, self.c_width, self.bench, time_c,
                               self.da_lut, self.da_num_locks, self.da_width, self.bench, time_da,
                               self.db_lut, self.db_num_locks, self.db_width, self.bench, time_db)
@@ -619,15 +619,14 @@ class SparseMatMul:
 
 class Linear(torch.nn.Module):
 
-  def __init__(self, in_features, out_features, block, mask, bench = False):
+  def __init__(self, in_features, out_features, block, layout, bench = False):
     super(Linear, self).__init__()
     self.in_features = in_features
     self.out_features = out_features
     self.block = block
-    self.mask = mask
-    self.weight = torch.nn.Parameter(torch.Tensor(mask.sum(), block, block))
+    self.weight = torch.nn.Parameter(torch.Tensor(layout.sum(), block, block))
     self.reset_parameters()
-    self.matmul = SparseMatMul(False, False, 'dds', mask, block, bench)
+    self.matmul = SparseMatMul(False, False, 'dds', layout, block, bench)
   
   def reset_parameters(self):
     torch.nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))

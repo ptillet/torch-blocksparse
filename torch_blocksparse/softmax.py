@@ -157,8 +157,11 @@ class _sparse_softmax(torch.autograd.Function):
                   8192:  (1, 16384, 16),
                   4096:  (1, 8192, 16),
                   2048:  (1, 4096, 16),
-                  1024:  (1, 2048, 16)}
-        bound = max(1024, 2**int(math.log2(max_k-1)))
+                  1024:  (1, 2048, 16),
+                  512:   (1, 1024, 8),
+                  256:   (1, 512, 4),
+                  128:   (1, 256, 4)}
+        bound = max(128, 2**int(math.log2(max_k-1)))
         if bound not in params:
           raise NotImplementedError('Reductions larger than 32768 elements '\
                                     'are not yet implemented')
@@ -179,11 +182,11 @@ class _sparse_softmax(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, scale, key_padding_mask, attn_mask, kp_mask_mode, attn_mask_mode,
-                layout, block, lut, num_blocks, maxlut, bench, time):
+                spdims, block, lut, num_blocks, maxlut, bench, time):
         # run kernel
         kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block, 
                                              kp_mask_mode, attn_mask_mode)
-        grid = lambda opt: [triton.cdiv(layout.shape[0] * layout.shape[1] * block, opt.d('TM')),
+        grid = lambda opt: [triton.cdiv(spdims[0] * spdims[1] * block, opt.d('TM')),
                             x.shape[0]]
         # handle None key_padding_mask
         stride_zkpm = 0 if key_padding_mask is None else key_padding_mask.stride(0)
@@ -198,7 +201,8 @@ class _sparse_softmax(torch.autograd.Function):
                          grid=grid, bench=bench)
         # save to context
         ctx.mark_dirty(x)
-        ctx.save_for_backward(x, layout, lut)
+        ctx.save_for_backward(x, lut)
+        ctx.spdims = spdims
         ctx.block = block
         ctx.maxlut = maxlut
         ctx.scale = scale
@@ -209,11 +213,11 @@ class _sparse_softmax(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dx):
         # retrieve from context
-        x, layout, lut = ctx.saved_tensors
+        x, lut = ctx.saved_tensors
         # run kernel
         kernel = _sparse_softmax.make_kernel(bwd_kernels, bwd_src, ctx.maxlut*ctx.block, x.dtype, ctx.block, 
                                              ctx.kp_mask_mode, ctx.attn_mask_mode)
-        grid = lambda opt: [triton.cdiv(layout.shape[0] * layout.shape[1] * ctx.block, opt.d('TM')),
+        grid = lambda opt: [triton.cdiv(ctx.spdims[0] * ctx.spdims[1] * ctx.block, opt.d('TM')),
                             x.shape[0]]
         kernel(x, ctx.scale, dx, lut, ctx.maxlut, x.stride(0), dx.stride(0), grid=grid)
         return dx, None, None, None, None, None, None, None, None, None, None, None, None
@@ -225,7 +229,7 @@ class SparseSoftmax:
     def __init__(self, layout, block, bench = False):
         self.fwd_lut, self.fwd_maxlut = _sparse_softmax.make_lut(layout, block)
         self.num_blocks = layout.sum()
-        self.layout = layout
+        self.spdims = layout.shape
         self.block = block
         self.bench = bench
     
@@ -234,7 +238,7 @@ class SparseSoftmax:
         time_y = [None]
         x = SparseSoftmax.sparse_softmax(x, scale, key_padding_mask, attn_mask, 
                                   key_padding_mask_mode, attn_mask_mode,
-                                  self.layout, self.block,
+                                  self.spdims, self.block,
                                   self.fwd_lut, self.num_blocks, 
                                   self.fwd_maxlut, self.bench, time_y)
         self.time_y = time_y[0]

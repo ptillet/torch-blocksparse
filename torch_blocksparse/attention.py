@@ -3,6 +3,7 @@ from torch.nn.functional import *
 import torch
 from collections import namedtuple
 import torch_blocksparse
+import sys
 
 def multi_head_attention_forward(query,                           # type: Tensor
                                  key,                             # type: Tensor
@@ -280,6 +281,7 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
 
     # add to cache
     def get_ops(self, L):
+        import sys
         if L not in MultiheadAttention.ops:
             sparsity = self.sparsity
             layout = MultiheadAttention._make_layout(self.num_heads, L // sparsity.block, sparsity.mode,
@@ -294,23 +296,23 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
         return MultiheadAttention.ops[L]
 
     # constructor
-    def __init__(self, embed_dim, num_heads, sparsity, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False, kdim=None, vdim=None):
+    def __init__(self, embed_dim, num_heads, sparsity, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False, kdim=None, vdim=None,
+                 key_padding_mask_mode='add', attn_mask_mode='mul'):
         if dropout != 0:
             raise NotImplementedError('dropout is not supported for now')
 
         super(MultiheadAttention, self).__init__(embed_dim, num_heads, dropout, bias, add_bias_kv, add_zero_attn, kdim, vdim)
         self.sparsity = sparsity
+        self.key_padding_mask_mode = key_padding_mask_mode
+        self.attn_mask_mode = attn_mask_mode
 
 
     # forward pass
     def forward(self, query, key, value, key_padding_mask=None,
-                need_weights=True, attn_mask=None,
-                key_padding_mask_mode='add', attn_mask_mode='mul'):
+                need_weights=True, attn_mask=None):
         # check that operation is supported
         if query.shape != key.shape or key.shape != value.shape:
             raise NotImplementedError('only self-attention is supported for now')
-        if need_weights:
-            raise NotImplementedError('returning weights is not supported for now')
         # cache look-up table computations etc
         sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax = self.get_ops(query.shape[0])
         # execute
@@ -326,7 +328,7 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 attn_mask=attn_mask, use_separate_proj_weight=True,
                 q_proj_weight=self.q_proj_weight, k_proj_weight=self.k_proj_weight,
                 v_proj_weight=self.v_proj_weight,
-                key_padding_mask_mode=key_padding_mask_mode, attn_mask_mode=attn_mask_mode)
+                key_padding_mask_mode=self.key_padding_mask_mode, attn_mask_mode=self.attn_mask_mode)
         else:
             return multi_head_attention_forward(
                 query, key, value, self.embed_dim, self.num_heads,
@@ -337,4 +339,21 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 training=self.training,
                 key_padding_mask=key_padding_mask, need_weights=need_weights,
                 attn_mask=attn_mask,
-                key_padding_mask_mode=key_padding_mask_mode, attn_mask_mode=attn_mask_mode)
+                key_padding_mask_mode=self.key_padding_mask_mode, attn_mask_mode=self.attn_mask_mode)
+
+def replace_mha(model):
+    for child_name, child in model.named_children():
+        if isinstance(child, nn.modules.activation.MultiheadAttention):
+            add_bias_kv = child.bias_k is not None
+            device = child.in_proj_weight.device
+            info = MultiheadAttention.SparsityInfo(mode='dense', block=32)
+            mha = MultiheadAttention(child.embed_dim, child.num_heads, info,
+                                     dropout=child.dropout, add_bias_kv=add_bias_kv, 
+                                     add_zero_attn=child.add_zero_attn, kdim=child.kdim,
+                                     vdim=child.vdim, key_padding_mask_mode='mul', 
+                                     attn_mask_mode='add').to(device)
+            for yparam, xparam in zip(mha.parameters(), child.parameters()):
+                yparam.data.copy_(xparam.data)
+            setattr(model, child_name, mha)
+        else:
+            replace_mha(child)
