@@ -1,7 +1,7 @@
 import torch_blocksparse
 import torch
 
-use_half = False
+use_half = True
 BatchSize, NumHeads, SeqLen, Embed = 32, 16, 128, 1024
 #BatchSize, NumHeads, SeqLen, Embed = 8, 32, 512, 1024
 #BatchSize, NumHeads, SeqLen, Embed = 16, 16, 1024, 1024
@@ -36,6 +36,9 @@ if use_half:
     key = key.half()
     value = value.half()
     triton_kp_mask = triton_kp_mask.half()
+    torch_attn_mask = torch_attn_mask.half()
+    triton_attn_mask = triton_attn_mask.half()
+    
 # run modules
 sparse_out, _ = sparse_mha(query, key, value, key_padding_mask=triton_kp_mask, attn_mask=triton_attn_mask, need_weights=False)
 dense_out, _ = dense_mha(query, key, value, key_padding_mask=torch_kp_mask, attn_mask=torch_attn_mask, need_weights=False)
