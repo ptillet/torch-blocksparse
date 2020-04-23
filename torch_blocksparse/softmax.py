@@ -7,7 +7,7 @@ fwd_src = '''
 __global__ void softmax_fwd(TYPE *X, float scale,
                             int *LUT, TYPE *KP_M, TYPE *ATTN_M,
                             int num_blocks, int sizemax, 
-                            int stride_zx, int stride_zkpm, int stride_zattnm){ 
+                            long stride_zx, int stride_zkpm, int stride_zattnm){ 
   int pidhm = get_program_id(0);
   int pidz = get_program_id(1);
 
@@ -83,7 +83,7 @@ bwd_src = '''
 
 __global__ void softmax_bwd(TYPE * X, float scale,
                             TYPE* DX, int* LUT,
-                            int sizemax, int stride_zx, int stride_zdx) {
+                            int sizemax, long stride_zx, long stride_zdx) {
     int pidhm = get_program_id(0);
     int pidz = get_program_id(1);
 

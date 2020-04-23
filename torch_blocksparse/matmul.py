@@ -9,12 +9,12 @@ src = '''
                         int lda __multipleof(8), 
                         int ldb __multipleof(8), 
                         int ldc __multipleof(8),
-                        int stride_za __multipleof(8),
-                        int stride_zb __multipleof(8),
-                        int stride_zc __multipleof(8),
-                        int stride_ha __multipleof(8),
-                        int stride_hb __multipleof(8),
-                        int stride_hc __multipleof(8),
+                        long stride_za __multipleof(8),
+                        long stride_zb __multipleof(8),
+                        long stride_zc __multipleof(8),
+                        long stride_ha __multipleof(8),
+                        long stride_hb __multipleof(8),
+                        long stride_hc __multipleof(8),
                         int DS0, 
                         int SDD_K __multipleof(16), int SDD_off_width,
                         int* lut, int* locks, int nlocks) {
@@ -408,7 +408,8 @@ class _sparse_matmul(torch.autograd.Function):
     header = torch.stack((offsets, segments, column, depth, lockid, maxid), dim=1).view(-1).contiguous()
     incs = torch.stack((xincs, wincs), dim=1).view(-1).contiguous()
     # create lut
-    lut = torch.cat((header, incs)).type(torch.int32).cuda()
+    lut = torch.cat((header, incs))
+    lut = lut.type(torch.int32).cuda()
     # create locks
     num_locks = max(1, lockid.max())
     return lut, num_locks, width
