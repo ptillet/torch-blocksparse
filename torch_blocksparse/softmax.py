@@ -23,9 +23,9 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   int offset[TM]  = *(header + 1);
 
   // block id and column id
-  int blockid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis, :]);
-  int columnid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks);
-  int rowid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis, :] + num_blocks*2);
+  long blockid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis, :]);
+  long columnid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks);
+  long rowid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis, :] + num_blocks*2);
 
   // pointers to key padding mask
   TYPE* pkp_m[TM, TN]  = KP_M + pidz * stride_zkpm 
@@ -99,7 +99,7 @@ __global__ void softmax_bwd(TYPE * X, float scale,
     int offset[TM] = *(header + 1);
 
     // initialize pointers to block-sparse input
-    int blockid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis, :]);
+    long blockid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis, :]);
 
     TYPE* px[TM, TN] = X + pidz * stride_zx
                          + blockid * BLOCK * BLOCK

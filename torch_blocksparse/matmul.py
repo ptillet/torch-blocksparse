@@ -16,7 +16,8 @@ src = '''
                         long stride_hb __multipleof(8),
                         long stride_hc __multipleof(8),
                         int DS0, 
-                        int SDD_K __multipleof(16), int SDD_off_width,
+                        int SDD_K __multipleof(16), 
+                        int SDD_off_width,
                         int* lut, int* locks, int nlocks) {
     /* ---------------- */
     /*    Prologue      */
@@ -42,7 +43,7 @@ src = '''
     int offnc = 0;
     int offpa = 0;
     int offpb = 0;
-    int offpc = pid1 * TM * TN;
+    long offpc = pid1 * TM * TN;
     int maxid = TZ;
     int offhc = 0;
     int offha = z;
