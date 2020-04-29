@@ -15,7 +15,7 @@ src = '''
                         long stride_ha __multipleof(8),
                         long stride_hb __multipleof(8),
                         long stride_hc __multipleof(8),
-                        int DS0, 
+                        int DS0, int DS1,
                         int SDD_K __multipleof(16), 
                         int SDD_off_width,
                         int* lut, int* locks, int nlocks) {
@@ -160,10 +160,10 @@ src = '''
     bool checkc[TM, TN] = 1;
 #endif
 #ifdef DSD
-    bool checkc[TM, TN] = rcn[newaxis, :] < DS0;
+    bool checkc[TM, TN] = rcn[newaxis, :] < DS0 && rcm[:, newaxis] < DS1;
 #endif
 #ifdef DDS
-    bool checkc[TM, TN] = rcm[:, newaxis] < DS0;
+    bool checkc[TM, TN] = rcm[:, newaxis] < DS0 && rcn[newaxis, :] < DS1;
 #endif
     TYPE* pc[TM, TN] = C + offpc + offhc*stride_hc + pidz*stride_zc + rcm[:, newaxis]*STRIDE_CM + rcn[newaxis, :]*STRIDE_CN;
     // write-back directly
@@ -314,7 +314,7 @@ class _sparse_matmul(torch.autograd.Function):
                         a.stride(2), b.stride(2), block, 
                         a.stride(0), b.stride(0), c.stride(0),
                         a.stride(1), b.stride(1), c.stride(0), 
-                        AS2, AS3, off_width, lut, locks, num_locks, 
+                        AS2, AS2, AS3, off_width, lut, locks, num_locks, 
                         grid = lambda opt: [opt.d('TZ'), min(max_width, width - off_width), AS0], 
                         bench = bench)
       total = total + current if bench else None
@@ -454,7 +454,7 @@ class _sparse_matmul(torch.autograd.Function):
                      a.stride(2), block, c.stride(2), 
                      a.stride(0), b.stride(0), c.stride(0),
                      a.stride(1), b.stride(1), c.stride(1),
-                     AS2, 0, 0, lut, locks, num_locks, 
+                     AS2, BS2, 0, 0, lut, locks, num_locks, 
                      grid = lambda opt: [width, triton.cdiv(AS2, opt.d('TM')), AS0], 
                      bench = bench)
     return c
@@ -498,7 +498,7 @@ class _sparse_matmul(torch.autograd.Function):
                      block, b.stride(2), c.stride(2), 
                      a.stride(0), b.stride(0), c.stride(0),
                      a.stride(1), b.stride(1), c.stride(1),
-                     BS3, 0, 0, lut, locks, num_locks, 
+                     BS3, AS1, 0, 0, lut, locks, num_locks, 
                      grid = lambda opt: [width, triton.cdiv(BS3, opt.d('TN')), BS0], 
                      bench = bench)
     return c
