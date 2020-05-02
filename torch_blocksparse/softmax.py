@@ -22,10 +22,12 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   int size[TM]    = *(header + 0);
   int offset[TM]  = *(header + 1);
 
+  bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
+
   // block id and column id
-  long blockid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis, :]);
-  long columnid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks);
-  long rowid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis, :] + num_blocks*2);
+  long blockid[TM, TN] = check ? *(LUT + offset[:, newaxis] + rbn[newaxis, :]) : 0;
+  long columnid[TM, TN] = check ? *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks) : 0;
+  long rowid[TM, TN] = check ? *(LUT + offset[:, newaxis] + rbn[newaxis, :] + num_blocks*2) : 0;
 
   // pointers to key padding mask
   TYPE* pkp_m[TM, TN]  = KP_M + pidz * stride_zkpm 
@@ -44,8 +46,7 @@ __global__ void softmax_fwd(TYPE *X, float scale,
                         + rxm[:,newaxis] * BLOCK 
                         + rxn[newaxis,:];
 
-  // load  input
-  bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
+  // load  input  
   TYPE x[TM, TN] =  check ? *px : -INFINITY;
   // load key-padding mask
   bool do_kp_mask[TM, TN] = KP_M;
