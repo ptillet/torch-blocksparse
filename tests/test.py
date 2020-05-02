@@ -170,7 +170,7 @@ def run_softmax_triton(x, scale, dx, mask, layout, block):
   dx = dense_to_sparse(dx, layout, block)
   x = dense_to_sparse(x, layout, block)
   x.retain_grad()
-  y = sparse_softmax(x, scale=scale, mask=mask)
+  y = sparse_softmax(x, scale=scale, key_padding_mask=mask)
   y.backward(dx)
   dx = x.grad.clone()
   x.grad.zero_()
@@ -192,7 +192,7 @@ def run_softmax_reference(x, scale, dx, mask, layout, block):
 def bench_softmax_triton(x, scale, mask, layout, block):
   sparse_softmax = softmax.SparseSoftmax(layout, block, bench=True)
   x = dense_to_sparse(x, layout, block)
-  x = sparse_softmax(x, scale=scale, mask=mask)
+  x = sparse_softmax(x, scale=scale, key_padding_mask=mask)
   return sparse_softmax.time_y*1e-9
 
 
@@ -221,7 +221,7 @@ def test_softmax(Z, H, M, N, scale, rho, block):
 
 if __name__ == '__main__':
   # test softmax
-  #test_softmax(3, 2, 256, 2048, 0.5, 0.7, 16)
+  test_softmax(3, 2, 256, 2048, 0.5, 0.7, 16)
   # test matmul
   for mode in ['sdd', 'dsd', 'dds']:
     test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
