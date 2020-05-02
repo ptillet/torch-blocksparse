@@ -160,10 +160,10 @@ src = '''
     bool checkc[TM, TN] = 1;
 #endif
 #ifdef DSD
-    bool checkc[TM, TN] = rcn[newaxis, :] < DS0 && rcm[:, newaxis] < DS1;
+    bool checkc[TM, TN] = rcn[newaxis, :] < DS0;
 #endif
 #ifdef DDS
-    bool checkc[TM, TN] = rcm[:, newaxis] < DS0 && rcn[newaxis, :] < DS1;
+    bool checkc[TM, TN] = rcm[:, newaxis] < DS0;
 #endif
     TYPE* pc[TM, TN] = C + offpc + offhc*stride_hc + pidz*stride_zc + rcm[:, newaxis]*STRIDE_CM + rcn[newaxis, :]*STRIDE_CN;
     // write-back directly
