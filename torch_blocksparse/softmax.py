@@ -46,7 +46,7 @@ __global__ void softmax_fwd(TYPE *X, float scale,
                         + rxm[:,newaxis] * BLOCK 
                         + rxn[newaxis,:];
 
-  // load  input  
+  // load  input
   TYPE x[TM, TN] =  check ? *px : -INFINITY;
   // load key-padding mask
   bool do_kp_mask[TM, TN] = KP_M;
