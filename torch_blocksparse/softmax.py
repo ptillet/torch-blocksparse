@@ -25,9 +25,13 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
 
   // block id and column id
-  long blockid[TM, TN] = check ? *(LUT + offset[:, newaxis] + rbn[newaxis, :]) : 0;
-  long columnid[TM, TN] = check ? *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks) : 0;
-  long rowid[TM, TN] = check ? *(LUT + offset[:, newaxis] + rbn[newaxis, :] + num_blocks*2) : 0;
+  long blockid[TM, TN]  = *(LUT + offset[:, newaxis] + rbn[newaxis, :]);
+  long columnid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks);
+  long rowid[TM, TN]    = *(LUT + offset[:, newaxis] + rbn[newaxis, :] + num_blocks*2);
+
+  blockid  = check ? blockid  : 0;
+  columnid = check ? columnid : 0;
+  rowid    = check ? rowid    : 0;
 
   // pointers to key padding mask
   TYPE* pkp_m[TM, TN]  = KP_M + pidz * stride_zkpm 
@@ -149,6 +153,7 @@ class _sparse_softmax(torch.autograd.Function):
         offsets += 2*sizes.numel()
         header = torch.stack((sizes, offsets), dim=1).view(-1)
         lut = torch.cat((header, idx, columns, rows)).type(torch.int32).cuda()
+
         return lut, sizes.max()
 
     @staticmethod
