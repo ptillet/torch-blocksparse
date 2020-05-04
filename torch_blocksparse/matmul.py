@@ -329,7 +329,7 @@ class _sparse_matmul(torch.autograd.Function):
   # Given a binary layout of 0s and 1s,
   # Construct look-up table for efficient execution on GPUs
   @staticmethod
-  def make_dxx_lut(mask, block, step, trans, transform = lambda idx: idx):
+  def make_dxx_lut(layout, block, step, trans, transform = lambda idx: idx):
     # load-balancing
     _empty = torch.tensor([], dtype=torch.int64, device=layout.device)
     segments = _empty.clone()
