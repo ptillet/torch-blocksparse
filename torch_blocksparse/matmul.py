@@ -259,9 +259,9 @@ class _sparse_matmul(torch.autograd.Function):
   # SPARSE = DENSE x DENSE #
   ##########################
   @staticmethod
-  def make_sdd_lut(mask, block):
-    nnz = mask.nonzero()
-    width = mask.sum()
+  def make_sdd_lut(layout, block):
+    nnz = layout.nonzero()
+    width = layout.sum()
     # create lut
     h = nnz[:, 0]
     i = nnz[:, 1]
@@ -329,7 +329,7 @@ class _sparse_matmul(torch.autograd.Function):
   # Given a binary layout of 0s and 1s,
   # Construct look-up table for efficient execution on GPUs
   @staticmethod
-  def make_dxx_lut(mask, block, step, trans, transform = lambda idx: idx):
+  def make_dxx_lut(layout, block, step, trans, transform = lambda idx: idx):
     # load-balancing
     _empty = torch.tensor([], dtype=torch.int64, device=layout.device)
     segments = _empty.clone()
@@ -553,7 +553,7 @@ class _sparse_matmul(torch.autograd.Function):
            None, None, None, None, None,\
            None, None, None, None, None
 
-class SparseMatMul:
+class MatMul:
 
   def __init__(self, layout, block, mode, trans_a = False, trans_b = False, bench = False):
     if mode not in ['sdd', 'dsd', 'dds']:
@@ -606,8 +606,8 @@ class SparseMatMul:
     time_da = [None]
     time_db = [None]
     # pad shapes with ones
-    a = SparseMatMul._pad_shape(a, self.mode == 'dsd')
-    b = SparseMatMul._pad_shape(b, self.mode == 'dds')
+    a = MatMul._pad_shape(a, self.mode == 'dsd')
+    b = MatMul._pad_shape(b, self.mode == 'dds')
     # execute
     c = _sparse_matmul.apply(a, b, self.trans_a, self.trans_b, False,
                               self.mode, self.spdims, self.block,
@@ -629,7 +629,7 @@ class Linear(torch.nn.Module):
     self.block = block
     self.weight = torch.nn.Parameter(torch.Tensor(layout.sum(), block, block))
     self.reset_parameters()
-    self.matmul = SparseMatMul(False, False, 'dds', layout, block, bench)
+    self.matmul = MatMul(False, False, 'dds', layout, block, bench)
   
   def reset_parameters(self):
     torch.nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))

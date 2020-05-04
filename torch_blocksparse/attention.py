@@ -287,11 +287,11 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
             layout = MultiheadAttention._make_layout(self.num_heads, L // sparsity.block, sparsity.mode,
                                                     sparsity.stride // sparsity.block, sparsity.unidirectional,
                                                     sparsity.numverts, sparsity.vertsize)
-            sparse_dot_sdd_nt = torch_blocksparse.SparseMatMul(layout, sparsity.block, 'sdd',
+            sparse_dot_sdd_nt = torch_blocksparse.MatMul(layout, sparsity.block, 'sdd',
                                                                trans_a=False, trans_b=True)
-            sparse_dot_dsd_nn = torch_blocksparse.SparseMatMul(layout, sparsity.block, 'dsd',
+            sparse_dot_dsd_nn = torch_blocksparse.MatMul(layout, sparsity.block, 'dsd',
                                                                trans_a=False, trans_b=False)
-            sparse_softmax = torch_blocksparse.SparseSoftmax(layout, sparsity.block)
+            sparse_softmax = torch_blocksparse.Softmax(layout, sparsity.block)
             MultiheadAttention.ops[L] = (sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax)
         return MultiheadAttention.ops[L]
 

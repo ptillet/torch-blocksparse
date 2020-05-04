@@ -228,7 +228,7 @@ class _sparse_softmax(torch.autograd.Function):
         kernel(x, ctx.scale, dx, lut, ctx.maxlut, x.stride(0), dx.stride(0), grid=grid)
         return dx, None, None, None, None, None, None, None, None, None, None, None, None
 
-class SparseSoftmax:
+class Softmax:
     
     sparse_softmax = _sparse_softmax.apply
 
@@ -242,7 +242,7 @@ class SparseSoftmax:
     def __call__(self, x, scale = 1., key_padding_mask = None, attn_mask = None, 
                  key_padding_mask_mode='add', attn_mask_mode='add'):
         time_y = [None]
-        x = SparseSoftmax.sparse_softmax(x, scale, key_padding_mask, attn_mask, 
+        x = Softmax.sparse_softmax(x, scale, key_padding_mask, attn_mask, 
                                   key_padding_mask_mode, attn_mask_mode,
                                   self.spdims, self.block,
                                   self.fwd_lut, self.num_blocks, 

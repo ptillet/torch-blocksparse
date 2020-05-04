@@ -1,5 +1,5 @@
-from torch_blocksparse import *
 import torch
+import torch_blocksparse
 from time import time
 
 torch.manual_seed(0)
@@ -61,7 +61,7 @@ def run_mm_triton(x, w, mode, trans_a, trans_b, layout, block, dy):
   x = dense_to_sparse(x, layout, block) if mode == 'dsd' else x
   w = dense_to_sparse(w, layout, block) if mode == 'dds' else w
   dy = dense_to_sparse(dy, layout, block) if mode == 'sdd' else dy
-  op = SparseMatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
+  op = torch_blocksparse.MatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
   x.retain_grad()
   w.retain_grad()
   y = op(x, w)
@@ -76,7 +76,7 @@ def bench_mm_triton(x, w, mode, trans_a, trans_b, layout, block, num_repeat):
   from time import time
   x = dense_to_sparse(x, layout, block) if mode == 'dsd' else x
   w = dense_to_sparse(w, layout, block) if mode == 'dds' else w
-  op = SparseMatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
+  op = torch_blocksparse.MatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
   op.bench = num_repeat
   y = op(x, w)
   torch.cuda.synchronize()
@@ -169,7 +169,7 @@ def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block):
 ###########
 
 def run_softmax_triton(x, scale, dx, mask, layout, block):
-  sparse_softmax = softmax.SparseSoftmax(layout, block, bench=False)
+  sparse_softmax = torch_blocksparse.Softmax(layout, block, bench=False)
   dx = dense_to_sparse(dx, layout, block)
   x = dense_to_sparse(x, layout, block)
   x.retain_grad()
@@ -193,7 +193,7 @@ def run_softmax_reference(x, scale, dx, mask, layout, block):
   return y, dx
   
 def bench_softmax_triton(x, scale, mask, layout, block):
-  sparse_softmax = softmax.SparseSoftmax(layout, block, bench=True)
+  sparse_softmax = torch_blocksparse.Softmax(layout, block, bench=True)
   x = dense_to_sparse(x, layout, block)
   x = sparse_softmax(x, scale=scale, key_padding_mask=mask)
   return sparse_softmax.time_y*1e-9
@@ -279,10 +279,10 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, do_bench = True):
   N, C, H, W = x.shape
   _, _, R, S = layout.shape
   K = dy.shape[1]
-  x = Conv2d.nchw_to_chwn(x)
-  dy = Conv2d.nchw_to_chwn(dy)
+  x = torch_blocksparse.Conv2d.nchw_to_chwn(x)
+  dy = torch_blocksparse.Conv2d.nchw_to_chwn(dy)
   x.retain_grad()
-  conv2d = Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order='CHWN', bias=False).cuda().type(w.dtype)
+  conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order='CHWN', bias=False).cuda().type(w.dtype)
   conv2d.weight.data.copy_(compress_weights(w, layout, block))
   y = conv2d(x)
   # backward
@@ -374,13 +374,13 @@ if __name__ == '__main__':
   # test softmax
   test_softmax(3, 2, 256, 2048, 0.5, 0.7, 16)
   # test matmul
-  #for mode in ['sdd', 'dsd', 'dds']:
-  #  test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
-  #  test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
-  #  test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
-  #  test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
-  #test_conv2d(128, 16, 32, 32, 32, 3, 3, (1, 1), (1, 1), 0., 16) 
+  for mode in ['sdd', 'dsd', 'dds']:
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
+    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
+  test_conv2d(128, 16, 32, 32, 32, 3, 3, (1, 1), (1, 1), 0., 16) 
   for (N, C, H, W, K, R, S, pad, stride) in wrn_22_2_shapes():
     print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
-    test_conv2d(N, C, H, W, K, R, S, pad, stride, 0.8, 16)
+    test_conv2d(N, C, H, W, K, R, S, pad, stride, 0.5, 16)
     print('pass!')
