@@ -25,9 +25,13 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
 
   // block id and column id
-  long blockid[TM, TN]  = *(LUT + offset[:, newaxis] + rbn[newaxis, :]);
-  long columnid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks);
-  long rowid[TM, TN]    = *(LUT + offset[:, newaxis] + rbn[newaxis, :] + num_blocks*2);
+  int off_blockid[TM, TN]  = offset[:, newaxis] + rbn[newaxis, :];
+  int off_columnid[TM, TN] = off_blockid + num_blocks;
+  int off_rowid[TM, TN]    = off_blockid + num_blocks*2;
+
+  long blockid[TM, TN]  = *(LUT + off_blockid);
+  long columnid[TM, TN] = *(LUT + off_columnid);
+  long rowid[TM, TN]    = *(LUT + off_rowid);
 
   blockid  = check ? blockid  : 0;
   columnid = check ? columnid : 0;
@@ -147,13 +151,14 @@ class _sparse_softmax(torch.autograd.Function):
         idx = torch.arange(layout.sum())
         # rows
         rows = layout.nonzero()[:, 1]
+        rows = torch.cat((rows, torch.zeros(32768 - rows.size(0), dtype=rows.dtype, device=rows.device)))
         # columns
         columns = layout.nonzero()[:, 2]
+        columns = torch.cat((columns, torch.zeros(32768 - columns.size(0), dtype=columns.dtype, device=columns.device)))
         # construct look-up table
         offsets += 2*sizes.numel()
         header = torch.stack((sizes, offsets), dim=1).view(-1)
         lut = torch.cat((header, idx, columns, rows)).type(torch.int32).cuda()
-
         return lut, sizes.max()
 
     @staticmethod
