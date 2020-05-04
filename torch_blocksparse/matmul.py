@@ -160,10 +160,10 @@ src = '''
     bool checkc[TM, TN] = 1;
 #endif
 #ifdef DSD
-    bool checkc[TM, TN] = rcn[newaxis, :] < DS0 && rcm[:, newaxis] < DS1;
+    bool checkc[TM, TN] = rcn[newaxis, :] < DS0;
 #endif
 #ifdef DDS
-    bool checkc[TM, TN] = rcm[:, newaxis] < DS0 && rcn[newaxis, :] < DS1;
+    bool checkc[TM, TN] = rcm[:, newaxis] < DS0;
 #endif
     TYPE* pc[TM, TN] = C + offpc + offhc*stride_hc + pidz*stride_zc + rcm[:, newaxis]*STRIDE_CM + rcn[newaxis, :]*STRIDE_CN;
     // write-back directly
@@ -259,9 +259,9 @@ class _sparse_matmul(torch.autograd.Function):
   # SPARSE = DENSE x DENSE #
   ##########################
   @staticmethod
-  def make_sdd_lut(layout, block):
-    nnz = torch.nonzero(layout)
-    width = layout.sum()
+  def make_sdd_lut(mask, block):
+    nnz = mask.nonzero()
+    width = mask.sum()
     # create lut
     h = nnz[:, 0]
     i = nnz[:, 1]
@@ -329,7 +329,7 @@ class _sparse_matmul(torch.autograd.Function):
   # Given a binary layout of 0s and 1s,
   # Construct look-up table for efficient execution on GPUs
   @staticmethod
-  def make_dxx_lut(layout, block, step, trans):
+  def make_dxx_lut(mask, block, step, trans, transform = lambda idx: idx):
     # load-balancing
     _empty = torch.tensor([], dtype=torch.int64, device=layout.device)
     segments = _empty.clone()
@@ -365,7 +365,7 @@ class _sparse_matmul(torch.autograd.Function):
       nnz = torch.nonzero(layout.transpose(1, 2))
     num_blocks = nnz.size(0)
     offsets = torch.min(offsets, (num_blocks - 1)*torch.ones_like(offsets))
-    idx = nnz[:, 2]*block
+    idx = transform(nnz[:, 2]*block)
     xincs = idx.clone() 
     xincs[1:] -= idx[:-1]
     # divide block into multiple steps

@@ -1,6 +1,9 @@
 from torch_blocksparse import *
 import torch
+from time import time
+
 torch.manual_seed(0)
+torch.backends.cudnn.benchmark = False
 
 ############
 ## UTILS  ##
@@ -215,16 +218,169 @@ def test_softmax(Z, H, M, N, scale, rho, block):
   triton_ts = bench_softmax_triton(x, scale, mask, layout, block) 
   print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
 
+###########
+# CONV    #
+###########
+
+def mask_weights(w, layout, block):
+  repeat_k = block*torch.ones(layout.shape[0], dtype=torch.int64)
+  repeat_c = block*torch.ones(layout.shape[1], dtype=torch.int64)
+  mask = layout.repeat_interleave(repeat_k, dim=0)\
+               .repeat_interleave(repeat_c, dim=1).cuda()
+  return w * mask
+
+def compress_weights(w, layout, block):
+  blocks = torch.empty((layout.sum(), block, block), dtype=w.dtype, device=w.device)
+  current = 0
+  for k in range(layout.shape[0]):
+    for r in range(layout.shape[2]):
+      for s in range(layout.shape[3]):
+        for c in range(layout.shape[1]):
+          if layout[k, c, r, s] == 0:
+            continue
+          blocks[current, :] = w[k*block : (k+1)*block,
+                                 c*block : (c+1)*block,
+                                 r, s]
+          current += 1
+  return blocks
+
+def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = True):
+  # create conv2d
+  C, K, R, S = x.shape[1], dy.shape[1], layout.shape[2], layout.shape[3]
+  conv2d = torch.nn.Conv2d(w.shape[1], w.shape[0], (R, S), padding=pad, stride=stride, bias=False).cuda().type(w.dtype)
+  conv2d.weight.data.copy_(mask_weights(w, layout, block))
+  # run conv2d
+  y = conv2d(x)
+  # backward
+  y.backward(dy)
+  dx = x.grad.clone()
+  dw = conv2d.weight.grad.clone()
+  dw = compress_weights(dw, layout, block)
+  x.grad.zero_()
+  conv2d.weight.grad.zero_()
+  # benchmark
+  ret = [y, dx, dw, None, None]
+  if do_bench:
+    # time forward
+    torch.cuda.synchronize()
+    fw_start = time()
+    y = conv2d(x)
+    torch.cuda.synchronize()
+    ret[3] = time() - fw_start
+    # time backward
+    bw_start = time()
+    y.backward(dy)
+    torch.cuda.synchronize()
+    ret[4] = time() - bw_start
+  return tuple(ret)
+
+def run_conv2d_triton(x, w, dy, pad, stride, layout, block, do_bench = True):
+  # create conv2d
+  N, C, H, W = x.shape
+  _, _, R, S = layout.shape
+  K = dy.shape[1]
+  x = Conv2d.nchw_to_chwn(x)
+  dy = Conv2d.nchw_to_chwn(dy)
+  x.retain_grad()
+  conv2d = Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order='CHWN', bias=False).cuda().type(w.dtype)
+  conv2d.weight.data.copy_(compress_weights(w, layout, block))
+  y = conv2d(x)
+  # backward
+  y.backward(dy)
+  dx = x.grad.clone()
+  dw = conv2d.weight.grad.clone()
+  x.grad.zero_()
+  conv2d.weight.grad.zero_()
+  # benchmark
+  ret = [y, dx, dw, None, None]
+  if do_bench:
+    # time forward pass
+    torch.cuda.synchronize()
+    fw_start = time()
+    y = conv2d(x)
+    torch.cuda.synchronize()
+    ret[3] = time() - fw_start
+    # time backward pass
+    bw_start = time()
+    y.backward(dy)
+    torch.cuda.synchronize()
+    ret[4] = time() - bw_start
+  return tuple(ret)
+
+def relerr(x, y):
+  x = x[x.abs() > 1e-5]
+  y = y[y.abs() > 1e-5]
+  if x.shape != y.shape:
+    return 1
+  diff  = x - y
+  ewmax = torch.max(x.abs(), y.abs())
+  return (diff.abs() / ewmax).max().item()
+
+def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block):
+  # probability distribution
+  probs = torch.Tensor([rho, 1-rho])
+  generator = torch.distributions.categorical.Categorical(probs)
+  # initialize tensors
+  layout = generator.sample((K//block, C//block, R, S))
+  layout.view(-1)[0] = 1
+  dtype = torch.float32
+  P = (H + 2*pad[0] - R)//stride[0] + 1
+  Q = (W + 2*pad[1] - S)//stride[1] + 1
+  x = torch.rand((N, C, H, W), requires_grad=True).cuda().type(dtype)
+  w = torch.rand((K, C, R, S), requires_grad=True).cuda().type(dtype)
+  dy = torch.rand((N, K, P, Q)).cuda().type(dtype)
+  x.retain_grad()
+  w.retain_grad()
+  # execute
+  ry, rdx, rdw, r_fw_time, r_bw_time = run_conv2d_reference(x, w, dy, pad, stride, layout, block)
+  ty, tdx, tdw, t_fw_time, t_bw_time = run_conv2d_triton(x, w, dy, pad, stride, layout, block)
+  assert relerr(ry, ty) < 1e-4
+  assert relerr(rdx, tdx) < 1e-4
+  assert relerr(rdw, tdw) < 1e-4
+  return r_fw_time, r_bw_time, t_fw_time, t_bw_time
+
 #############
 # Run tests #
 #############
+
+def wrn_22_2_shapes():
+  return (\
+    (128, 16, 32, 32, 16, 3, 3, (1, 1), (1, 1)),
+    (128, 32, 32, 32, 32, 3, 3, (1, 1), (1, 1)),
+    (128, 16, 32, 32, 32, 1, 1, (0, 0), (1, 1)),
+    (128, 32, 32, 32, 64, 3, 3, (1, 1), (2, 2)),
+    (128, 64, 16, 16, 64, 3, 3, (1, 1), (1, 1)),
+    (128, 32, 32, 32, 64, 1, 1, (0, 0), (2, 2)),
+    (128, 64, 16, 16, 128, 3, 3, (1, 1), (2, 2)),
+    (128, 128, 8, 8, 128, 3, 3, (1, 1), (1, 1)),
+    (128, 64, 16, 16, 128, 1, 1, (0, 0), (2, 2)),
+    (128, 128, 8, 8, 128, 3, 3, (1, 1), (1, 1))
+  )
+def wrn_28_10_shapes():
+  return (\
+  (128, 160, 32, 32, 160, 3, 3, (1, 1), (1, 1)),
+  (128, 160, 32, 32, 320, 3, 3, (1, 1), (2, 2)),
+  (128, 320, 16, 16, 320, 3, 3, (1, 1), (1, 1)),
+  (128, 160, 32, 32, 320, 1, 1, (0, 0), (2, 2)),
+  (128, 320, 16, 16, 320, 3, 3, (1, 1), (1, 1)),
+  (128, 320, 16, 16, 640, 3, 3, (1, 1), (2, 2)),
+  (128, 640, 8,  8,  640, 3, 3, (1, 1), (1, 1)),
+  (128, 320, 16, 16, 640, 1, 1, (0, 0), (2, 2)),
+  (128, 640, 8,  8,  640, 3, 3, (1, 1), (1, 1))\
+  )
+
 
 if __name__ == '__main__':
   # test softmax
   test_softmax(3, 2, 256, 2048, 0.5, 0.7, 16)
   # test matmul
-  for mode in ['sdd', 'dsd', 'dds']:
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
+  #for mode in ['sdd', 'dsd', 'dds']:
+  #  test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
+  #  test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
+  #  test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
+  #  test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
+  #test_conv2d(128, 16, 32, 32, 32, 3, 3, (1, 1), (1, 1), 0., 16) 
+  for (N, C, H, W, K, R, S, pad, stride) in wrn_22_2_shapes():
+    print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
+    test_conv2d(N, C, H, W, K, R, S, pad, stride, 0.8, 16)
+    print('pass!')
