@@ -16,6 +16,8 @@ where `op()` is identity or transposition.
 The following modules are supported:
 ```
 Sparse MultiHead Attention (https://arxiv.org/abs/1904.10509)
+Linear
+Block-Sparse Convolutions
 ```
 
 Inputs are FP32 or FP16 (with tensor cores).
@@ -25,19 +27,17 @@ Inputs are FP32 or FP16 (with tensor cores).
 Torch-Blocksparse depends on CUDA 10.1 and the [Triton](https://github.com/ptillet/triton) language and compiler:
 ```
 sudo apt-get install llvm-8-dev;
-pip install -e "git+https://github.com/ptillet/triton.git#egg=triton&subdirectory=python"
+pip install -r requirements.txt;
+python setup.py install;
 ```
 
 And run the tests:
 ```
-python tests/test.py
+cd tests;
+python test.py
 ```
 The first run will take some time as all the necessary CUDA code will be JIT-compiled and cached in `$HOME/.triton/cache`.
 
-You can install the package as follows:
-```
-python setup.py develop
-```
 
 ## Usage
 
