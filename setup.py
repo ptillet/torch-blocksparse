@@ -9,7 +9,7 @@ setuptools.setup(
     author           = 'Philippe Tillet',
     maintainer       = 'Philippe Tillet',
     maintainer_email = 'ptillet@g.harvard.edu',
-    #install_requires = ['torch'],
+    install_requires = ['triton', 'torch'],
     packages         = ['torch_blocksparse'],
     url              = 'https://github.com/ptillet/torch-blocksparse',
     license          = 'MIT'
