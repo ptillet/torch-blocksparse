@@ -241,6 +241,10 @@ class Softmax:
     def __call__(self, x, scale = 1., key_padding_mask = None, attn_mask = None, 
                  key_padding_mask_mode='add', attn_mask_mode='add'):
         time_y = [None]
+        if attn_mask is not None and attn_mask.dtype != torch.float32:
+            raise ValueError('Attention mask must be float32')
+        if key_padding_mask is not None and key_padding_mask.dtype != torch.float32:
+            raise ValueError('Key padding mask must be float32')
         x = Softmax.sparse_softmax(x, scale, key_padding_mask, attn_mask, 
                                   key_padding_mask_mode, attn_mask_mode,
                                   self.spdims, self.block,
