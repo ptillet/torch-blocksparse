@@ -27,7 +27,7 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   int rbmn[TM, TN] = (rbn[newaxis, :] <  size[:, newaxis] ? rbn[newaxis, :] : size[:, newaxis] - 1 );
 
   // block id and column id
-  int off_blockid[TM, TN]  = offset[:, newaxis] + rbn[newaxis, :];
+  int off_blockid[TM, TN]  = offset[:, newaxis] + rbmn;
   int off_columnid[TM, TN] = off_blockid + num_blocks;
   int off_rowid[TM, TN]    = off_blockid + num_blocks*2;
   long blockid[TM, TN]  = *(LUT + off_blockid);
