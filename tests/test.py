@@ -216,6 +216,10 @@ def test_softmax(Z, H, M, N, scale, rho, block):
   # execute
   ry, rdx = run_softmax_reference(x, scale, dx, kp_mask, bool_attn_mask, layout, block)
   ty, tdx = run_softmax_triton(x, scale, dx, kp_mask, fp_attn_mask, layout, block)
+  ry = ry[ry == ry]
+  ty = ty[ty == ty]
+  rdx = rdx[(rdx == rdx) & (rdx != 0)]
+  tdx = tdx[(tdx == tdx) & (tdx != 0)]
   assert(torch.allclose(ry, ty))
   assert(torch.allclose(rdx, tdx))
   # benchmark
@@ -376,7 +380,7 @@ def wrn_28_10_shapes():
 
 if __name__ == '__main__':
   # test softmax
-  test_softmax(3, 2, 512, 512, 0.5, 0.7, 16)
+  test_softmax(3, 2, 192, 192, 0.5, 0.7, 16)
   # test matmul
   for mode in ['sdd', 'dsd', 'dds']:
     test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
