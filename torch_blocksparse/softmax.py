@@ -33,10 +33,6 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   long columnid[TM, TN] = *(LUT + off_columnid);
   long rowid[TM, TN]    = *(LUT + off_rowid);
 
-  blockid  = check ? blockid  : 0;
-  columnid = check ? columnid : 0;
-  rowid    = check ? rowid    : 0;
-
   // pointers to key padding mask
   TYPE* pkp_m[TM, TN]  = KP_M + pidz * stride_zkpm 
                               + columnid * BLOCK
@@ -151,10 +147,8 @@ class _sparse_softmax(torch.autograd.Function):
         idx = torch.arange(layout.sum())
         # rows
         rows = layout.nonzero()[:, 1]
-        rows = torch.cat((rows, torch.zeros(32768 - rows.size(0), dtype=rows.dtype, device=rows.device)))
         # columns
         columns = layout.nonzero()[:, 2]
-        columns = torch.cat((columns, torch.zeros(32768 - columns.size(0), dtype=columns.dtype, device=columns.device)))
         # construct look-up table
         offsets += 2*sizes.numel()
         header = torch.stack((sizes, offsets), dim=1).view(-1)
