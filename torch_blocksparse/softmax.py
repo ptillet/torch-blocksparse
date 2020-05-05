@@ -22,17 +22,13 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   int size[TM]    = *(header + 0);
   int offset[TM]  = *(header + 1);
 
-
-  // modify rbn to avoid out-of-bound LUT accesses
-  int rbmn[TM, TN] = (rbn[newaxis, :] <  size[:, newaxis] ? rbn[newaxis, :] : size[:, newaxis] - 1 );
+  bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
+  int rbmn[TM, TN] = check ? rbn[newaxis, :] : size[:, newaxis] - 1;
 
   // block id and column id
-  int off_blockid[TM, TN]  = offset[:, newaxis] + rbmn;
-  int off_columnid[TM, TN] = off_blockid + num_blocks;
-  int off_rowid[TM, TN]    = off_blockid + num_blocks*2;
-  long blockid[TM, TN]  = *(LUT + off_blockid);
-  long columnid[TM, TN] = *(LUT + off_columnid);
-  long rowid[TM, TN]    = *(LUT + off_rowid);
+  long blockid[TM, TN]  = *(LUT + offset[:, newaxis] + rbmn);
+  long columnid[TM, TN] = *(LUT + offset[:, newaxis] + rbmn + num_blocks);
+  long rowid[TM, TN]    = *(LUT + offset[:, newaxis] + rbmn + num_blocks*2);
 
   // pointers to key padding mask
   TYPE* pkp_m[TM, TN]  = KP_M + pidz * stride_zkpm 
@@ -50,9 +46,6 @@ __global__ void softmax_fwd(TYPE *X, float scale,
                         + blockid * BLOCK * BLOCK 
                         + rxm[:,newaxis] * BLOCK 
                         + rxn[newaxis,:];
-
-  // bounds-checking
-  bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
 
   // load  input
   TYPE x[TM, TN] =  check ? *px : -INFINITY;
@@ -107,8 +100,9 @@ __global__ void softmax_bwd(TYPE * X, float scale,
     int size[TM] = *(header + 0);
     int offset[TM] = *(header + 1);
 
-    // modify rbn to avoid out-of-bound LUT accesses
-    int rbmn[TM, TN] = (rbn[newaxis, :] <  size[:, newaxis] ? rbn[newaxis, :] : size[:,newaxis] - 1 );
+
+    bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
+    int rbmn[TM, TN] = check ? rbn[newaxis, :] : size[:, newaxis] - 1;
 
     // initialize pointers to block-sparse input
     long blockid[TM, TN] = *(LUT + offset[:, newaxis] + rbmn);
@@ -124,7 +118,6 @@ __global__ void softmax_bwd(TYPE * X, float scale,
                            + rxn[newaxis, :];
 
     // compute fused softmax backward
-    bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
     TYPE x[TM, TN] = check ? *px : 0;
     TYPE dx[TM, TN] = check ? *pdx : 0;
     TYPE xdx[TM, TN] = x * dx;
