@@ -380,15 +380,15 @@ def wrn_28_10_shapes():
 
 if __name__ == '__main__':
   # test softmax
-  test_softmax(3, 2, 192, 192, 0.5, 0.7, 16)
-  # test matmul
-  for mode in ['sdd', 'dsd', 'dds']:
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
-  test_conv2d(128, 16, 32, 32, 32, 3, 3, (1, 1), (1, 1), 0., 16) 
-  for (N, C, H, W, K, R, S, pad, stride) in wrn_22_2_shapes():
-    print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
-    test_conv2d(N, C, H, W, K, R, S, pad, stride, 0.5, 16)
-    print('pass!')
+  test_softmax(1, 12, 128, 128, 0.5, 0.4, 16)
+  # # test matmul
+  # for mode in ['sdd', 'dsd', 'dds']:
+  #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
+  #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
+  #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
+  #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
+  # test_conv2d(128, 16, 32, 32, 32, 3, 3, (1, 1), (1, 1), 0., 16) 
+  # for (N, C, H, W, K, R, S, pad, stride) in wrn_22_2_shapes():
+  #   print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
+  #   test_conv2d(N, C, H, W, K, R, S, pad, stride, 0.5, 16)
+  #   print('pass!')
