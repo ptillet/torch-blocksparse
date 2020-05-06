@@ -476,7 +476,7 @@ class _sparse_conv2d(torch.autograd.Function):
     # create kernel
     defines = {'NAME': 'dds_conv2d_' + ('_dx' if is_dx else '_y'), 
                'TYPE': a.dtype,
-               'TM': [128], 
+               'TM': [64, 128, 256], 
                'TL': step, 
                'TN': block, 
                'BLOCK': block,
@@ -637,15 +637,20 @@ class Conv2d(torch.nn.Module):
               (torch.float32, 32): 16,
               (torch.float32, 64): 8,
               (torch.float16, 16): 16,
-              (torch.float16, 32): 32,
+              (torch.float16, 32): 16,
+              (torch.float16, 64): 32}[(dtype, block)]
+    da_step = {(torch.float32, 16): 16,
+              (torch.float32, 32): 16,
+              (torch.float32, 64): 8,
+              (torch.float16, 16): 16,
+              (torch.float16, 32): 16,
               (torch.float16, 64): 16}[(dtype, block)]
-    da_step = c_step
     db_step = {(torch.float32, 16): 16,
               (torch.float32, 32): 16,
               (torch.float32, 64): 16,
               (torch.float16, 16): 64,
               (torch.float16, 32): 64,
-              (torch.float16, 64): 32}[(dtype, block)]
+              (torch.float16, 64): 64}[(dtype, block)]
     # hash to avoid recompiling
     key = (order, nchwkrspq, stride_a, stride_h, stride_w, pad_h, pad_w)
     N, C, H, W, K, R, S, P, Q = nchwkrspq
