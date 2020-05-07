@@ -225,12 +225,12 @@ class _sparse_conv2d(torch.autograd.Function):
   ##########################
   # UTILITIES              #
   ##########################
-  locks = None
+  locks = dict()
   @staticmethod
-  def get_locks(size):
-    if _sparse_conv2d.locks is None or size > _sparse_conv2d.locks.size(0):
-      _sparse_conv2d.locks = torch.zeros(size, dtype=torch.int32).cuda()
-    return _sparse_conv2d.locks
+  def get_locks(dev, size):
+    if dev not in _sparse_conv2d.locks or size > _sparse_conv2d.locks[dev].size(0):
+      _sparse_conv2d.locks[dev] = torch.zeros(size, dtype=torch.int32).cuda()
+    return _sparse_conv2d.locks[dev]
 
   @staticmethod
   def make_dds_lut(layout, block, step, is_dx, strides, full_layout, off_bh, off_bw, stride_bh, stride_bw):
@@ -435,7 +435,7 @@ class _sparse_conv2d(torch.autograd.Function):
     cache = _sparse_conv2d.sdd_cache
     kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a_dtype), num_warps=[2, 4])
     # create semaphores
-    locks = _sparse_conv2d.get_locks(2*width*num_locks)
+    locks = _sparse_conv2d.get_locks(a.device, 2*width*num_locks)
     # create output
     stride_na, stride_ca, stride_ha, stride_wa = a.stride()
     stride_nc, stride_kc, stride_pc, stride_qc = b.stride()
@@ -506,7 +506,7 @@ class _sparse_conv2d(torch.autograd.Function):
         if da_lut is None:
           c[:, :, off_ch::stride_h, off_cw::stride_w] = 0
         else:
-          da_locks = _sparse_conv2d.get_locks(2*da_width*da_num_locks*N*P*Q)
+          da_locks = _sparse_conv2d.get_locks(a.device, 2*da_width*da_num_locks*N*P*Q)
           cc = c[:, :, off_ch::stride_h, off_cw::stride_w]
           stride_nc, stride_kc, stride_pc, stride_qc = cc.stride()
           N, K, P, Q = cc.shape
@@ -522,7 +522,7 @@ class _sparse_conv2d(torch.autograd.Function):
                 bench = bench)
     else:
       stride_nc, stride_kc, stride_pc, stride_qc = c.stride()
-      locks = _sparse_conv2d.get_locks(2*width*num_locks*N*P*Q)
+      locks = _sparse_conv2d.get_locks(a.device, 2*width*num_locks*N*P*Q)
       kernel(a, b, c, 
             H, W, R, S, C,
             N, P, Q, K,
