@@ -2,7 +2,6 @@ import triton
 import torch
 from .matmul import _sparse_matmul
 import math
-import numpy as np
 
 src = '''
   __global__ void NAME (TYPE* A __readonly  __noalias __aligned(16),
@@ -245,7 +244,7 @@ class _sparse_conv2d(torch.autograd.Function):
     if is_dx:
       size = layout.sum()
       # blocks are stored in order KRSC
-      block_id = full_layout.clone()
+      block_id = full_layout.clone().permute(0, 2, 3, 1).contiguous()
       block_id[block_id > 0] = 1 + torch.arange(full_layout.sum())
       # blocks are traversed in order CRSK
       block_id = block_id.permute(3, 1, 2, 0).contiguous()
@@ -257,8 +256,8 @@ class _sparse_conv2d(torch.autograd.Function):
       # starting position in delta table
       b_deltas_start = torch.empty((0,), dtype=torch.int64)
       current = torch.tensor([0])
-      for i in range(layout.shape[3]):
-        offset = layout[:, :, :, i].sum()
+      for i in range(layout.shape[1]):
+        offset = layout[:, i, :, :].sum()
         if offset == 0:
           continue
         b_deltas_start = torch.cat((b_deltas_start, current))
@@ -291,11 +290,11 @@ class _sparse_conv2d(torch.autograd.Function):
     b_deltas = b_deltas.view(-1)
     b_deltas_start *= div
     # headers and pointer increments for a
-    out_dim = 3 if is_dx else 0
+    out_dim = 1 if is_dx else 0
     kk = 0
     for k in range(layout.shape[out_dim]):
         if is_dx:
-          nnz = layout[:, :, :, k].permute(1, 2, 0).nonzero()
+          nnz = layout[:, k, :, :].permute(1, 2, 0).nonzero()
           a_coffset = nnz[:,2]*block*strides[0] - \
                       nnz[:,1]*strides[1] - \
                       nnz[:,0]*strides[2]
@@ -303,7 +302,7 @@ class _sparse_conv2d(torch.autograd.Function):
                       nnz[1:,1]*strides[1] - \
                       nnz[1:,0]*strides[2]
         else:
-          nnz = layout[k, :, :, :].nonzero()
+          nnz = layout[k, :, :, :].permute(1, 2, 0).nonzero()
           a_coffset = nnz[:,2]*block*strides[0] + \
                       nnz[:,1]*strides[1] + \
                       nnz[:,0]*strides[2]
@@ -344,7 +343,7 @@ class _sparse_conv2d(torch.autograd.Function):
   
   @staticmethod
   def make_sdd_lut(layout, block):
-    nnz = layout.nonzero()
+    nnz = layout.permute(0, 2, 3, 1).contiguous().nonzero()
     width = layout.sum()
     # create lut
     k = nnz[:, 0]
@@ -681,7 +680,7 @@ class Conv2d(torch.nn.Module):
           if off_bh >= R or off_bw >= S:
             lut, num_locks, width = None, None, None
           else:
-            curr_layout = self.layout[:, off_bh::stride_h, off_bw::stride_w, :]
+            curr_layout = self.layout[:, :, off_bh::stride_h, off_bw::stride_w]
             lut, num_locks, width = _sparse_conv2d.make_dds_lut(curr_layout, self.block, da_step, 
                                                                 True, [stride_kc, stride_qc, stride_pc], self.layout, off_bh, off_bw, stride_h, stride_w)
           da_lut.append(lut)
@@ -703,13 +702,10 @@ class Conv2d(torch.nn.Module):
   def __init__(self, in_channels, out_channels, kernel_size, layout, block, padding = (0,0), stride = (1,1), order='NHWC', bias = False):
     if order not in ['NHWC', 'CHWN']:
       raise ValueError('Only NHWC and CHWN orders are supported')
-    if layout.shape != torch.Size([out_channels//block, in_channels//block, kernel_size[0], kernel_size[1]]):
-      raise ValueError('Layout must have shape [K//B, C//B, R, S]')
     super(Conv2d, self).__init__()
     assert bias == False
     self.lut_cache = dict()
-    # store in [K, R, S, C] for efficiency
-    self.layout = layout.permute(0, 2, 3, 1).contiguous()
+    self.layout = layout
     self.block = block
     self.in_channels = in_channels
     self.out_channels = out_channels
@@ -732,21 +728,35 @@ class Conv2d(torch.nn.Module):
   #   s = ''
   #   return s.format(**self.__dict__)
 
+  # for each row in rows, find its index in the 2D matrix X
+  # e.g.,
+  # X = [[2,1,0],
+  #      [9,7,4],
+  #      [5,8,3]]
+  # y = [[2,1,0],
+  #      [5,8,3]]
+  # returns [0, 2]
+  @staticmethod
+  def row_idx(X, rows):
+    if X.numel() == 0 or rows.numel() == 0:
+      return torch.tensor([], dtype=X.dtype, device=X.device)
+    delta = (X[None, :, :] - rows[:, None, :]) == 0
+    idx = delta.all(2).any(0).nonzero().flatten()
+    return idx
 
   @staticmethod
   def update_layout(layout_a, tensor_a, layout_b, init_val):
     _, block, block = tensor_a.shape
-    nnz_a = layout_a.nonzero().cpu().numpy()
-    nnz_b = layout_b.nonzero().cpu().numpy()
-    nrows, ncols = nnz_a.shape
-    dtype=  {'names':['f{}'.format(i) for i in range(ncols)],
-             'formats':ncols * [nnz_a.dtype]}
-    _, idx_a, idx_b = np.intersect1d(nnz_a.view(dtype), nnz_b.view(dtype), return_indices=True)
-    idx_a = torch.tensor(idx_a)
-    idx_b = torch.tensor(idx_b)
+    nnz_a = layout_a.permute(0,2,3,1).contiguous().nonzero()
+    nnz_b = layout_b.permute(0,2,3,1).contiguous().nonzero()
+    nnz = list(set(map(tuple, nnz_a.tolist())) & set(map(tuple, nnz_b.tolist())))
+    nnz = torch.tensor(nnz, dtype=layout_a.dtype, device=layout_a.device)
+    idx_a = Conv2d.row_idx(nnz_a, nnz)
+    idx_b = Conv2d.row_idx(nnz_b, nnz)
     tensor_b = torch.empty([layout_b.sum(), block, block], device=tensor_a.device, dtype=tensor_a.dtype)
     tensor_b[:] = init_val
     tensor_b[idx_b, :, :] = tensor_a[idx_a, :, :]
+    #print(tensor_b[idx_b,:,:] - tensor_a[idx_a,:,:])
     return tensor_b
 
   def clear_cache(self):
