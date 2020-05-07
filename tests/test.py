@@ -331,7 +331,7 @@ def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block):
   # initialize tensors
   layout = generator.sample((K//block, C//block, R, S))
   layout.view(-1)[0] = 1
-  dtype = torch.float16
+  dtype = torch.float32
   P = (H + 2*pad[0] - R)//stride[0] + 1
   Q = (W + 2*pad[1] - S)//stride[1] + 1
   x = torch.rand((N, C, H, W), requires_grad=True).cuda().type(dtype)
@@ -342,9 +342,9 @@ def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block):
   # execute
   ry, rdx, rdw, r_fw_time, r_bw_time = run_conv2d_reference(x, w, dy, pad, stride, layout, block)
   ty, tdx, tdw, t_fw_time, t_bw_time = run_conv2d_triton(x, w, dy, pad, stride, layout, block)
-  #assert relerr(ry, ty) < 1e-4
-  #assert relerr(rdx, tdx) < 1e-4
-  #assert relerr(rdw, tdw) < 1e-4
+  assert relerr(ry, ty) < 1e-4
+  assert relerr(rdx, tdx) < 1e-4
+  assert relerr(rdw, tdw) < 1e-4
   return r_fw_time, r_bw_time, t_fw_time, t_bw_time
 
 #############
@@ -387,7 +387,7 @@ if __name__ == '__main__':
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
-  test_conv2d(128, 256, 32, 32, 256, 3, 3, (1, 1), (1, 1), 0., 64) 
+  test_conv2d(128, 256, 32, 32, 512, 3, 3, (1, 1), (1, 1), 0.7, 32) 
   # for (N, C, H, W, K, R, S, pad, stride) in wrn_22_2_shapes():
   #   print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
   #   test_conv2d(N, C, H, W, K, R, S, pad, stride, 0.5, 16)
