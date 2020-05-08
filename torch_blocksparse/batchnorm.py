@@ -115,7 +115,7 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
       _batchnorm.fwd_kernel[key] = triton.kernel(_batchnorm.fwd_src, defines = defines, num_warps=[2,4,8])
     kernel = _batchnorm.fwd_kernel[key]
     # allocate outputs
-    y    = torch.empty_like(x)
+    y    = torch.empty_strided(x.shape, x.stride(), layout=x.layout, dtype=x.dtype, device=x.device)
     mean = torch.empty(C, dtype=torch.float32, device=x.device)
     var  = torch.empty(C, dtype=torch.float32, device=x.device)
     # execute kernels
@@ -137,7 +137,7 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
     x, gamma, beta, mean, var = ctx.saved_tensors
     eps = ctx.eps
     # allocate result
-    dx = torch.empty_like(x)
+    dx    = torch.empty_strided(x.shape, x.stride(), layout=x.layout, dtype=x.dtype, device=x.device)
     dgamma = torch.empty_like(gamma)
     dbeta = torch.empty_like(beta)
     # execute
