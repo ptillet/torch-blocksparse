@@ -128,6 +128,10 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
 
   @staticmethod
   def backward(ctx, dy):
+    if dy.stride(0) != 1:
+      dy = dy.permute(1,2,3,0).contiguous()
+    #print(dy.shape, dy.stride())
+    #exit()
     # lazy compilation of kernel
     key = (dy.dtype, )
     if key not in _batchnorm.bwd_kernel:
@@ -147,27 +151,6 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
            H*W*N, eps,
            grid = lambda opt: [C])
     return dx, None, None, dgamma, dbeta, None, None, None
-
-class _to_nchw(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, x):
-      return torch_blocksparse.Conv2d.chwn_to_nchw(x).clone()
-    
-    @staticmethod
-    def backward(ctx, dy):
-      return torch_blocksparse.Conv2d.nchw_to_chwn(dy)
-
-class _to_chwn(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, x):
-      return torch_blocksparse.Conv2d.nchw_to_chwn(x).clone()
-    
-    @staticmethod
-    def backward(ctx, dy):
-      return torch_blocksparse.Conv2d.chwn_to_nchw(dy)
-
 
 class BatchNorm2d(torch.nn.modules.batchnorm.BatchNorm2d):
     
@@ -203,12 +186,12 @@ class BatchNorm2d(torch.nn.modules.batchnorm.BatchNorm2d):
         # CHWN
         if strides[0] == 1:
           if self.use_torch:
-            x = _to_nchw.apply(input)
+            x = _to_chwn.apply(input)
             output = torch.nn.functional.batch_norm(
-                                _to_nchw.apply(input), self.running_mean, self.running_var, self.weight, self.bias,
+                                x, self.running_mean, self.running_var, self.weight, self.bias,
                                 self.training or not self.track_running_stats,
                                 exponential_average_factor, self.eps)
-            output = _to_chwn.apply(output)
+            output = output.permute(1,2,3,0).contiguous().permute(3,0,1,2)
           else:
             output = BatchNorm2d._batchnorm(input, self.running_mean, self.running_var, self.weight, self.bias, 
                                           self.training or not self.track_running_stats, 
