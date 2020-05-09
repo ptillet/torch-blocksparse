@@ -497,9 +497,9 @@ class _sparse_conv2d(torch.autograd.Function):
     kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a.dtype, is_dx), num_warps=[2, 4])
     # create output
     if order == 'NHWC':
-      c = torch.zeros(N, P, Q, K, dtype=a.dtype, device=a.device).permute(0,3,1,2)
+      c = torch.empty_strided((N, K, P, Q), (K*Q*P, 1, K*Q, K), dtype=a.dtype, device=a.device)
     if order == 'CHWN':
-      c = torch.zeros(K, P, Q, N, dtype=a.dtype, device=a.device).permute(3,0,1,2)
+      c = torch.empty_strided((N, K, P, Q), (1, N*Q*P, N*Q, N), dtype=a.dtype, device=a.device)
     stride_na, stride_ca, stride_ha, stride_wa = a.stride()
     if is_dx:
       for da_lut, da_num_locks, da_width, (a_pad_h, a_pad_w, off_bh, off_bw, off_ch, off_cw) in zip(lut, num_locks, width, da_offs):

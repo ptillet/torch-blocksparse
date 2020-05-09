@@ -22,8 +22,10 @@ void batchnorm_ymv(TYPE *Y, float *M, float *V,
 
   // compute mean
   float accm[TM] = 0;
-  for(int i = 0; i < N; i = i + TM)
-    accm = accm + *(px + i);
+  for(int i = 0; i < N; i = i + TM){
+    bool check[TM] = rm + i < N;
+    accm = accm + (check?*(px + i):0);
+  }
   float mean = (float)accm[+] / N;
   *(M + c) = mean;
   *(RM + c) = (1 - mu)*run_mean + mu*mean;
@@ -31,7 +33,8 @@ void batchnorm_ymv(TYPE *Y, float *M, float *V,
   // compute variance
   float accv[TM] = 0;
   for(int i = 0; i < N; i = i + TM){
-    float x[TM] = *(px + i);
+    bool check[TM] = rm + i < N;
+    float x[TM] = check ? *(px + i) : 0;
     x = x - mean;
     accv = accv + x*x;
   }
@@ -48,9 +51,10 @@ void batchnorm_ymv(TYPE *Y, float *M, float *V,
   float beta = *(B + c);
   float rstdg = 1 / sqrtf(var + eps) * gamma;
   for(int i = 0; i < N; i = i + TM){
-    float x[TM] = *(px + i);
+    bool check[TM] = rm + i < N;
+    float x[TM] = check ? *(px + i) : 0;
     float y[TM] = (x - mean)*rstdg + beta;
-    *(py + i) = y;
+    *?(check)(py + i) = y;
   }
 }
 """
@@ -78,8 +82,9 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
   float  acc_dg[TM] = 0;
   float  acc_db[TM] = 0;
   for(int i = 0; i < N; i = i + TM){
-    float x[TM] = *(px + i);
-    float dy[TM] = *(pdy + i);
+    bool check[TM] = rx + i < N;
+    float x[TM] = check ? *(px + i) : 0;
+    float dy[TM] = check ? *(pdy + i) : 0;
     acc_dg += dy*(x - mean)*rstd;
     acc_db += dy;
   }
@@ -90,12 +95,13 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
 
   // compute dx
   for(int i = 0; i < N; i = i + TM){
-    float x[TM] = *(px + i);
-    float dy[TM] = *(pdy + i);
+    bool check[TM] = rx + i < N;
+    float x[TM] = check ? *(px + i) : 0;
+    float dy[TM] = check ? *(pdy + i) : 0;
     float xhat[TM] = (x - mean) * rstd;
     float xtmp[TM] = (xhat * dg + db) / N;
     float dx[TM] = (dy - xtmp) * rstd * gamma;
-    *(pdx + i) = dx;
+    *?(check)(pdx + i) = dx;
   }
 }
 """
@@ -109,7 +115,7 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
     # lazy compilation of kernel
     key = (training, x.dtype)
     if key not in _batchnorm.fwd_kernel:
-      defines = {'TM': 256, 'TYPE': x.dtype}
+      defines = {'TM': [128, 256, 512], 'TYPE': x.dtype}
       if training:
         defines['TRAINING'] = True
       _batchnorm.fwd_kernel[key] = triton.kernel(_batchnorm.fwd_src, defines = defines, num_warps=[2,4,8])
@@ -135,7 +141,7 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
     # lazy compilation of kernel
     key = (dy.dtype, )
     if key not in _batchnorm.bwd_kernel:
-      _batchnorm.bwd_kernel[key] = triton.kernel(_batchnorm.bwd_src, defines = {'TM': 256, 'TYPE': dy.dtype}, num_warps=[4])
+      _batchnorm.bwd_kernel[key] = triton.kernel(_batchnorm.bwd_src, defines = {'TM': [128, 256, 512], 'TYPE': dy.dtype}, num_warps=[2,4,8])
     kernel = _batchnorm.bwd_kernel[key]
     # retrieve info
     x, gamma, beta, mean, var = ctx.saved_tensors
