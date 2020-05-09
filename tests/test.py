@@ -234,7 +234,7 @@ def mask_weights(w, layout, block):
   repeat_k = block*torch.ones(layout.shape[0], dtype=torch.int64)
   repeat_c = block*torch.ones(layout.shape[1], dtype=torch.int64)
   mask = layout.repeat_interleave(repeat_k, dim=0)\
-               .repeat_interleave(repeat_c, dim=1).cuda()
+               .repeat_interleave(repeat_c, dim=1).cuda().type(w.dtype)
   return w * mask
 
 def compress_weights(w, layout, block):
