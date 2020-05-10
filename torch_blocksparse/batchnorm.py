@@ -22,10 +22,8 @@ void batchnorm_ymv(TYPE *Y, float *M, float *V,
 
   // compute mean
   float accm[TM] = 0;
-  for(int i = 0; i < N; i = i + TM){
-    bool check[TM] = rm + i < N;
-    accm = accm + (check?*(px + i):0);
-  }
+  for(int i = 0; i < N; i = i + TM)
+    accm = accm + *(px + i);
   float mean = (float)accm[+] / N;
   *(M + c) = mean;
   *(RM + c) = (1 - mu)*run_mean + mu*mean;
@@ -33,8 +31,7 @@ void batchnorm_ymv(TYPE *Y, float *M, float *V,
   // compute variance
   float accv[TM] = 0;
   for(int i = 0; i < N; i = i + TM){
-    bool check[TM] = rm + i < N;
-    float x[TM] = check ? *(px + i) : 0;
+    float x[TM] = *(px + i);
     x = x - mean;
     accv = accv + x*x;
   }
@@ -51,10 +48,9 @@ void batchnorm_ymv(TYPE *Y, float *M, float *V,
   float beta = *(B + c);
   float rstdg = 1 / sqrtf(var + eps) * gamma;
   for(int i = 0; i < N; i = i + TM){
-    bool check[TM] = rm + i < N;
-    float x[TM] = check ? *(px + i) : 0;
+    float x[TM] = *(px + i);
     float y[TM] = (x - mean)*rstdg + beta;
-    *?(check)(py + i) = y;
+    *(py + i) = y;
   }
 }
 """
@@ -82,9 +78,8 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
   float  acc_dg[TM] = 0;
   float  acc_db[TM] = 0;
   for(int i = 0; i < N; i = i + TM){
-    bool check[TM] = rx + i < N;
-    float x[TM] = check ? *(px + i) : 0;
-    float dy[TM] = check ? *(pdy + i) : 0;
+    float x[TM] = *(px + i);
+    float dy[TM] = *(pdy + i);
     acc_dg += dy*(x - mean)*rstd;
     acc_db += dy;
   }
@@ -95,13 +90,12 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
 
   // compute dx
   for(int i = 0; i < N; i = i + TM){
-    bool check[TM] = rx + i < N;
-    float x[TM] = check ? *(px + i) : 0;
-    float dy[TM] = check ? *(pdy + i) : 0;
+    float x[TM] = *(px + i);
+    float dy[TM] = *(pdy + i);
     float xhat[TM] = (x - mean) * rstd;
     float xtmp[TM] = (xhat * dg + db) / N;
     float dx[TM] = (dy - xtmp) * rstd * gamma;
-    *?(check)(pdx + i) = dx;
+    *(pdx + i) = dx;
   }
 }
 """
@@ -115,7 +109,7 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
     # lazy compilation of kernel
     key = (training, x.dtype)
     if key not in _batchnorm.fwd_kernel:
-      defines = {'TM': [128, 256, 512], 'TYPE': x.dtype}
+      defines = {'TM': 256, 'TYPE': x.dtype}
       if training:
         defines['TRAINING'] = True
       _batchnorm.fwd_kernel[key] = triton.kernel(_batchnorm.fwd_src, defines = defines, num_warps=[2,4,8])
@@ -134,14 +128,10 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
 
   @staticmethod
   def backward(ctx, dy):
-    if dy.stride(0) != 1:
-      dy = dy.permute(1,2,3,0).contiguous()
-    #print(dy.shape, dy.stride())
-    #exit()
     # lazy compilation of kernel
     key = (dy.dtype, )
     if key not in _batchnorm.bwd_kernel:
-      _batchnorm.bwd_kernel[key] = triton.kernel(_batchnorm.bwd_src, defines = {'TM': [128, 256, 512], 'TYPE': dy.dtype}, num_warps=[2,4,8])
+      _batchnorm.bwd_kernel[key] = triton.kernel(_batchnorm.bwd_src, defines = {'TM': 256, 'TYPE': dy.dtype}, num_warps=[4])
     kernel = _batchnorm.bwd_kernel[key]
     # retrieve info
     x, gamma, beta, mean, var = ctx.saved_tensors
@@ -157,6 +147,27 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
            H*W*N, eps,
            grid = lambda opt: [C])
     return dx, None, None, dgamma, dbeta, None, None, None
+
+class _to_nchw(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x):
+      return torch_blocksparse.Conv2d.chwn_to_nchw(x).clone()
+    
+    @staticmethod
+    def backward(ctx, dy):
+      return torch_blocksparse.Conv2d.nchw_to_chwn(dy)
+
+class _to_chwn(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x):
+      return torch_blocksparse.Conv2d.nchw_to_chwn(x).clone()
+    
+    @staticmethod
+    def backward(ctx, dy):
+      return torch_blocksparse.Conv2d.chwn_to_nchw(dy)
+
 
 class BatchNorm2d(torch.nn.modules.batchnorm.BatchNorm2d):
     
@@ -192,12 +203,12 @@ class BatchNorm2d(torch.nn.modules.batchnorm.BatchNorm2d):
         # CHWN
         if strides[0] == 1:
           if self.use_torch:
-            x = _to_chwn.apply(input)
+            x = _to_nchw.apply(input)
             output = torch.nn.functional.batch_norm(
-                                x, self.running_mean, self.running_var, self.weight, self.bias,
+                                _to_nchw.apply(input), self.running_mean, self.running_var, self.weight, self.bias,
                                 self.training or not self.track_running_stats,
                                 exponential_average_factor, self.eps)
-            output = output.permute(1,2,3,0).contiguous().permute(3,0,1,2)
+            output = _to_chwn.apply(output)
           else:
             output = BatchNorm2d._batchnorm(input, self.running_mean, self.running_var, self.weight, self.bias, 
                                           self.training or not self.track_running_stats, 
