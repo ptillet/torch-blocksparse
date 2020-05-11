@@ -107,3 +107,13 @@ class _permute(torch.autograd.Function):
         dx = _permute.do_work(dy, ctx.out_order, ctx.in_order)
         return dx, None, None
         
+
+class Permute(torch.nn.Module):
+
+    def __init__(self, in_order, out_order):
+        super(Permute, self).__init__()
+        self.in_order = in_order
+        self.out_order = out_order
+    
+    def forward(self, x):
+        return _permute.apply(x, self.in_order, self.out_order)

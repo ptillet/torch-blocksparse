@@ -148,27 +148,6 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
            grid = lambda opt: [C])
     return dx, None, None, dgamma, dbeta, None, None, None
 
-class _to_nchw(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, x):
-      return torch_blocksparse.Conv2d.chwn_to_nchw(x).clone()
-    
-    @staticmethod
-    def backward(ctx, dy):
-      return torch_blocksparse.Conv2d.nchw_to_chwn(dy)
-
-class _to_chwn(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, x):
-      return torch_blocksparse.Conv2d.nchw_to_chwn(x).clone()
-    
-    @staticmethod
-    def backward(ctx, dy):
-      return torch_blocksparse.Conv2d.chwn_to_nchw(dy)
-
-
 class BatchNorm2d(torch.nn.modules.batchnorm.BatchNorm2d):
     
     _batchnorm = _batchnorm.apply
@@ -202,15 +181,7 @@ class BatchNorm2d(torch.nn.modules.batchnorm.BatchNorm2d):
         strides = input.stride()
         # CHWN
         if strides[0] == 1:
-          if self.use_torch:
-            x = _to_nchw.apply(input)
-            output = torch.nn.functional.batch_norm(
-                                _to_nchw.apply(input), self.running_mean, self.running_var, self.weight, self.bias,
-                                self.training or not self.track_running_stats,
-                                exponential_average_factor, self.eps)
-            output = _to_chwn.apply(output)
-          else:
-            output = BatchNorm2d._batchnorm(input, self.running_mean, self.running_var, self.weight, self.bias, 
+          output = BatchNorm2d._batchnorm(input, self.running_mean, self.running_var, self.weight, self.bias, 
                                           self.training or not self.track_running_stats, 
                                           exponential_average_factor, self.eps)
         #NCHW
@@ -220,5 +191,4 @@ class BatchNorm2d(torch.nn.modules.batchnorm.BatchNorm2d):
                               self.training or not self.track_running_stats,
                               exponential_average_factor, self.eps)
           output = super(BatchNorm2d, self).forward(input)
-          return torch_blocksparse.Conv2d.nchw_to_chwn(output)
         return output

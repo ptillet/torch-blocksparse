@@ -1,5 +1,6 @@
 import triton
 import torch
+from .matmul import _sparse_matmul
 import math
 
 src = '''
@@ -39,27 +40,15 @@ src = '''
     int lockid  = select(TZ > 1, 1, 0);
     int maxid   = TZ;
     int offk    = pid1*L;
-    // unpack N, H, W
-    int  rx_nhw[TL]   = offk + 0 ... TL;
-#ifdef HWN
-    int  rx_hw[TL]    =  rx_nhw / N;
-    int  rx_n [TL]    =  rx_nhw % N;
-    int  rx_h [TL]    =  rx_hw  / Q;
-    int  rx_w [TL]    =  rx_hw  % Q;
-#else
-    int  rx_nh[TL]    =  rx_nhw / W;
-    int  rx_w [TL]    =  rx_nhw % W;
-    int  rx_n [TL]    =  rx_nh  / H;
-    int  rx_h [TL]    =  rx_nh  % H;
-#endif
     // pointers to A
     int* p_delta      = lut + get_num_programs(0)*4;
     int  ra_nhw[TL]   = offk + 0 ... TL;
     int* pa_delta[TL] = p_delta + offk + 0 ... TL;
     int  ra_c[TM]     = off_cc  * TM   + 0 ... TM;
-    int  ra_n[TL]     = rx_n;
-    int  ra_h[TL]     = rx_h * stride_h;
-    int  ra_w[TL]     = rx_w * stride_w;
+    int  ra_hw[TL]    =  ra_nhw / N;
+    int  ra_n [TL]    =  ra_nhw % N;
+    int  ra_h [TL]    = (ra_hw  / Q)*stride_h;
+    int  ra_w [TL]    = (ra_hw  % Q)*stride_w;
     TYPE* pa[TM, TL]  = A + ra_c[:, newaxis]           * STRIDE_CA
                           + off_cr                     * STRIDE_HA
                           + off_cs                     * STRIDE_WA
@@ -67,12 +56,10 @@ src = '''
                           + (ra_w[newaxis, :] - pad_w) * STRIDE_WA 
                           + ra_n[newaxis, :]           * STRIDE_NA;
     // pointers to B
-    int* pb_delta[TL] = p_delta + offk + N*P*Q + 0 ... TL;
-    int  rb_k[TN]    = off_ck * TN + 0 ... TN;
+    int   b_delta[TL] = offk + 0 ... TL;
+    int   rb_k[TN]    = off_ck * TN + 0 ... TN;
     TYPE* pb[TL, TN]  = B + rb_k[newaxis, :] * STRIDE_KB
-                          + rx_n[:, newaxis] * STRIDE_NB
-                          + rx_h[:, newaxis] * STRIDE_HB
-                          + rx_w[:, newaxis] * STRIDE_WB;
+                          + b_delta[:, newaxis] * STRIDE_NPQB;
     // bounds for bound-checking
     int  h_lo = 0 + pad_h - off_cr;
     int  h_hi = H + pad_h - off_cr;
@@ -145,33 +132,26 @@ src = '''
     /* ---------------- */
     // create result tile
     float acc[TM, TN] = 0;
+    int rla[TL] = 0 ... TL;
+    int rlb[TL] = 0 ... TL;
     for(int l = L; l > 0; l -= TL) {
       acc += a @ b;
 #ifdef DW
       int a_delta[TL] = *pa_delta;
-      int b_delta[TL] = *pb_delta;
       pa_delta += TL;
-      pb_delta += TL;
       pa += a_delta[newaxis, :];
-      pb += b_delta[:, newaxis];
-      rx_nhw += TL;
-#ifdef HWN
-      rx_hw    =  rx_nhw / N;
-      rx_n     =  rx_nhw % N;
-      rx_h     =  rx_hw  / Q;
-      rx_w     =  rx_hw  % Q;
-#else
-      rx_nh    =  rx_nhw / W;
-      rx_w     =  rx_nhw % W;
-      rx_n     =  rx_nh  / H;
-      rx_h     =  rx_nh  % H;
-#endif
-      int ra_h[TL] = rx_h * stride_h;
-      int ra_w[TL] = rx_w * stride_w;
+      pb += TL * STRIDE_NPQB;
+      ra_nhw += TL;
+      rla += TL;
+      rlb += TL;
+      ra_hw   =  ra_nhw / N;
+      ra_h    = (ra_hw  / Q)*stride_h;
+      ra_w    = (ra_hw  % Q)*stride_w;
       bool checkam[TM] = 1;
       bool checkal[TL] = ra_h >= h_lo && ra_h < h_hi && 
-                         ra_w >= w_lo && ra_w < w_hi &&
-                         (bool[TL])(l > TL);
+                         ra_w >= w_lo && ra_w < w_hi && (rla < L);
+      bool checkbn[TN] = 1;
+      bool checkbl[TL] = rlb < L;
 #else
       // update pointers
       pa_delta += 3;
@@ -191,15 +171,15 @@ src = '''
 #endif
       bool checkam[TM] = ra_h >= 0 && ra_h < H &&
                          ra_w >= 0 && ra_w < W; 
-      bool checkal[TL] = 1;
+      bool checkal[TL] = l > TL;
+      bool checkbn[TN] = 1;
+      bool checkbl[TL] = l > TL;
 #endif
       // pre-fetch
-      bool do_prefetch[TL] = l > TL;
-      bool checka[TM, TL] = checkam[:, newaxis] && checkal[newaxis, :] && 
-                            do_prefetch[newaxis, :];
-      bool checkb[TL, TN] = do_prefetch[:, newaxis];
+      bool checka[TM, TL] = checkam[:, newaxis] && checkal[newaxis, :];
+      bool checkb[TL, TN] = checkbn[newaxis, :] && checkbl[:, newaxis];
       a = checka ? *pa : 0;
-      b = *?(checkb)pb;
+      b = checkb ? *pb : 0;
     }
     TYPE c[TM, TN] = acc;
 
@@ -453,15 +433,10 @@ class _sparse_conv2d(torch.autograd.Function):
                'DW': True,
                'STRIDE_NA': 1 if order[-1] == 'N' else 'stride_na',
                'STRIDE_CA': 1 if order[-1] == 'C' else 'stride_ca',
-               'STRIDE_HA': 1 if order[-1] == 'H' else 'stride_ha',
-               'STRIDE_WA': 1 if order[-1] == 'W' else 'stride_wa',
-               # strides for b
-               'STRIDE_NB': 1 if order[-1] == 'N' else 'stride_nc',
+               'STRIDE_HA': 'stride_ha',
+               'STRIDE_WA': 'stride_wa',
                'STRIDE_KB': 1 if order[-1] == 'C' else 'stride_kc',
-               'STRIDE_HB': 1 if order[-1] == 'H' else 'stride_hc',
-               'STRIDE_WB': 1 if order[-1] == 'W' else 'stride_wc'}
-    if order == 'CHWN':
-      defines['HWN'] = True
+               'STRIDE_NPQB': 1 if order[-1] == 'N' else 'K'}
     cache = _sparse_conv2d.sdd_cache
     kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a_dtype), num_warps=[2, 4])
     # create semaphores
@@ -512,24 +487,20 @@ class _sparse_conv2d(torch.autograd.Function):
                'BLOCK': block,
                'STRIDE_BK': 1 if is_dx else block,
                'STRIDE_BC': block if is_dx else 1,
-               # strides for A
                'STRIDE_NA': 1 if order[-1] == 'N' else 'stride_na',
                'STRIDE_CA': 1 if order[-1] == 'C' else 'stride_ca',
-               'STRIDE_HA': 1 if order[-1] == 'H' else 'stride_ha',
-               'STRIDE_WA': 1 if order[-1] == 'W' else 'stride_wa',
-               # strides for C
+               'STRIDE_HA': 'stride_ha',
+               'STRIDE_WA': 'stride_wa',
                'STRIDE_NC': 1 if order[-1] == 'N' else 'stride_nc',
                'STRIDE_KC': 1 if order[-1] == 'C' else 'stride_kc',
-               'STRIDE_HC': 1 if order[-1] == 'H' else 'stride_hc',
-               'STRIDE_WC': 1 if order[-1] == 'W' else 'stride_wc'}
+               'STRIDE_HC': 'stride_hc',
+               'STRIDE_WC': 'stride_wc'}
     if is_dx:
       defines['DX'] = True
       defines['TRANSFORM_H'] = 'rc_p * stride_h + pad_h'
     cache = _sparse_conv2d.dds_cache
     kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a.dtype, is_dx), num_warps=[2, 4])
     # create output
-    if order == 'NCHW':
-      c = torch.zeros(N, K, P, Q, dtype=a.dtype, device=a.device)
     if order == 'NHWC':
       c = torch.zeros(N, P, Q, K, dtype=a.dtype, device=a.device).permute(0,3,1,2)
     if order == 'CHWN':
@@ -578,9 +549,9 @@ class _sparse_conv2d(torch.autograd.Function):
               da_step, da_lut, da_num_locks, da_width, da_offs,
               db_step, db_lut, db_num_locks, db_width,
               bench, c_time, da_time, db_time):
-    if    order[-1] == 'W' and a.stride(3) != 1\
-       or order[-1] == 'N' and a.stride(0) != 1\
-       or order[-1] == 'C' and a.stride(1) != 1:
+    if order[-1] == 'N' and a.stride(0) != 1:
+      raise ValueError(f'Input layout does not match {order}')
+    if order[-1] == 'C' and a.stride(1) != 1:
       raise ValueError(f'Input layout does not match {order}')
     # N, C, H, W, K, R, S, P, Q = nchwkrspq
     # ctx.save_for_backward(a, b)
@@ -620,10 +591,13 @@ class _sparse_conv2d(torch.autograd.Function):
   
   @staticmethod
   def backward(ctx, dc):
-    if    ctx.order[-1] == 'W' and dc.stride(3) != 1\
-       or ctx.order[-1] == 'N' and dc.stride(0) != 1\
-       or ctx.order[-1] == 'C' and dc.stride(1) != 1:
-      raise ValueError(f'Gradient layout does not match {ctx.order}')
+    if ctx.order[-1] == 'N' and dc.stride(0) != 1:
+      raise ValueError(f'Input layout does not match {ctx.order}')
+    if ctx.order[-1] == 'C' and dc.stride(1) != 1:
+      raise ValueError(f'Input layout does not match {ctx.order}')
+    # a, b = ctx.saved_tensors
+    # da = torch.empty_like(a)
+    # db = torch.empty_like(b)
     # retrieve from context
     a, b         = ctx.saved_tensors
     # gradients w.r.t. a
@@ -653,6 +627,13 @@ class Conv2d(torch.nn.Module):
 
   sparse_conv2d = _sparse_conv2d.apply
 
+  @staticmethod
+  def nchw_to_chwn(x):
+    return x.permute(1,2,3,0).contiguous().permute(3,0,1,2)
+  
+  @staticmethod
+  def chwn_to_nchw(x):
+    return x.contiguous()
 
   def precompute_lut(self, order, nchwkrspq, dtype, block, stride_a, 
                      stride_h, stride_w, pad_h, pad_w):
@@ -680,8 +661,6 @@ class Conv2d(torch.nn.Module):
     N, C, H, W, K, R, S, P, Q = nchwkrspq
     # unpack strides
     stride_na, stride_ca, stride_ha, stride_wa = stride_a
-    if order == 'NCHW':
-      stride_nc, stride_kc, stride_pc, stride_qc = W*H*C, W*H, W, 1
     if order == 'NHWC':
       stride_nc, stride_kc, stride_pc, stride_qc = K*Q*P, 1, K*Q, K
     if order == 'CHWN':
@@ -718,8 +697,7 @@ class Conv2d(torch.nn.Module):
       db_delta_a = _sparse_conv2d.make_db_delta(order, N, P, Q, stride_na, stride_ha, stride_wa, db_step,
                                                 transform_h = lambda h: h*stride_h - pad_h,
                                                 transform_w = lambda w: w*stride_w - pad_w)
-      db_delta_b = _sparse_conv2d.make_db_delta(order, N, P, Q, stride_nc, stride_pc, stride_qc, db_step)
-      db_lut = torch.cat((db_lut, db_delta_a, db_delta_b))
+      db_lut = torch.cat((db_lut, db_delta_a))
       # store results
       self.lut_cache[key] = (c_step, c_lut, c_num_locks, c_width, \
                              da_step, da_lut, da_num_locks, da_width, da_offs, \
@@ -727,8 +705,8 @@ class Conv2d(torch.nn.Module):
     return self.lut_cache[key]
 
   def __init__(self, in_channels, out_channels, kernel_size, layout, block, padding = (0,0), stride = (1,1), order='NHWC', bias = False):
-    if order not in ['NCHW', 'NHWC', 'CHWN']:
-      raise ValueError('Memory orders supported are: NCHW, NHWC, CHWN.')
+    if order not in ['NHWC', 'CHWN']:
+      raise ValueError('Only NHWC and CHWN orders are supported')
     super(Conv2d, self).__init__()
     assert bias == False
     self.lut_cache = dict()
@@ -797,7 +775,6 @@ class Conv2d(torch.nn.Module):
     nchwkrspq = N, Ca, H, W, K, R, S, P, Q
     if Ca != Cb:
       raise ValueError('Incompatible channels in data and weights')
-    #print(f'({N}, {Ca}, {H}, {W}, {K}, {R}, {S}, {self.padding}, {self.stride}),')
     # look-up tables
     c_step, c_lut, c_num_locks, c_width,\
     da_step, da_lut, da_num_locks, da_width, da_offs,\

@@ -307,8 +307,8 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Tr
   _, _, R, S = layout.shape
   K = dy.shape[1]
   if order == 'CHWN':
-    x = torch_blocksparse.Conv2d.nchw_to_chwn(x)
-    dy = torch_blocksparse.Conv2d.nchw_to_chwn(dy)
+    x = x.permute(1,2,3,0).contiguous().permute(3,0,1,2)
+    dy = dy.permute(1,2,3,0).contiguous().permute(3,0,1,2)
     x.retain_grad()
   conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda().type(w.dtype)
   conv2d.weight.data.copy_(compress_weights(w, layout, block))
@@ -363,13 +363,13 @@ def relerr(x, y):
   return (diff.abs() / ewmax).max().item()
 
 def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do_bench=True):
+  dtype = torch.float32
   # probability distribution
   probs = torch.Tensor([rho, 1-rho])
   generator = torch.distributions.categorical.Categorical(probs)
   # initialize tensors
   layout = generator.sample((K//block, C//block, R, S))
   layout.view(-1)[0] = 1
-  dtype = torch.float32
   P = (H + 2*pad[0] - R)//stride[0] + 1
   Q = (W + 2*pad[1] - S)//stride[1] + 1
   x = torch.rand((N, C, H, W), requires_grad=True).cuda().type(dtype)
@@ -381,7 +381,8 @@ def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do
   ty, tdx, tdw, t_y_time, t_dx_time, t_dw_time = run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench=do_bench)
   rtol = {torch.float16: 1e-2,
           torch.float32: 1e-4}[dtype]
-  #print(relerr(rdw, tdw))
+  #print(ry)
+  #print(ty)
   assert relerr(ry, ty) < rtol
   assert relerr(rdx, tdx) < rtol
   assert relerr(rdw, tdw) < rtol
@@ -553,9 +554,9 @@ if __name__ == '__main__':
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
-  #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'CHWN') 
+  test_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, 'CHWN') 
   #test_conv2d(256, 256, 16, 16, 256, 1, 1, (0, 0), (1, 1), 0.0, 32, 'NCHW') 
-  test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
+  #test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
   #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'NHWC') 
   #test_batchnorm(256, 32, 15, 15, )
   #for (N, C, H, W, K, R, S, pad, stride) in mobilenet_v2_shapes():
