@@ -112,7 +112,7 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
       defines = {'TM': 256, 'TYPE': x.dtype}
       if training:
         defines['TRAINING'] = True
-      _batchnorm.fwd_kernel[key] = triton.kernel(_batchnorm.fwd_src, defines = defines, num_warps=[2,4,8])
+      _batchnorm.fwd_kernel[key] = triton.kernel(_batchnorm.fwd_src, defines = defines, num_warps=[4])
     kernel = _batchnorm.fwd_kernel[key]
     # allocate outputs
     y    = torch.empty_strided(x.shape, x.stride(), layout=x.layout, dtype=x.dtype, device=x.device)

@@ -301,15 +301,16 @@ def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = True):
     ret[5] = (time() - dw_start) / repeat
   return tuple(ret)
 
-def run_conv2d_triton(x, w, dy, pad, stride, layout, block, do_bench = True):
+def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = True):
   # create conv2d
   N, C, H, W = x.shape
   _, _, R, S = layout.shape
   K = dy.shape[1]
-  x = torch_blocksparse.Conv2d.nchw_to_chwn(x)
-  dy = torch_blocksparse.Conv2d.nchw_to_chwn(dy)
-  x.retain_grad()
-  conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order='CHWN', bias=False).cuda().type(w.dtype)
+  if order == 'CHWN':
+    x = torch_blocksparse.Conv2d.nchw_to_chwn(x)
+    dy = torch_blocksparse.Conv2d.nchw_to_chwn(dy)
+    x.retain_grad()
+  conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda().type(w.dtype)
   conv2d.weight.data.copy_(compress_weights(w, layout, block))
   y = conv2d(x)
   # backward
@@ -361,14 +362,14 @@ def relerr(x, y):
   ewmax = torch.max(x.abs(), y.abs())
   return (diff.abs() / ewmax).max().item()
 
-def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block):
+def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do_bench=True):
   # probability distribution
   probs = torch.Tensor([rho, 1-rho])
   generator = torch.distributions.categorical.Categorical(probs)
   # initialize tensors
   layout = generator.sample((K//block, C//block, R, S))
   layout.view(-1)[0] = 1
-  dtype = torch.float16
+  dtype = torch.float32
   P = (H + 2*pad[0] - R)//stride[0] + 1
   Q = (W + 2*pad[1] - S)//stride[1] + 1
   x = torch.rand((N, C, H, W), requires_grad=True).cuda().type(dtype)
@@ -376,13 +377,14 @@ def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block):
   dy = torch.rand((N, K, P, Q)).cuda().type(dtype)
   x.retain_grad()
   # execute
-  ry, rdx, rdw, r_y_time, r_dx_time, r_dw_time = run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench=False)
-  ty, tdx, tdw, t_y_time, t_dx_time, t_dw_time = run_conv2d_triton(x, w, dy, pad, stride, layout, block, do_bench=False)
+  ry, rdx, rdw, r_y_time, r_dx_time, r_dw_time = run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench=do_bench)
+  ty, tdx, tdw, t_y_time, t_dx_time, t_dw_time = run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench=do_bench)
   rtol = {torch.float16: 1e-2,
           torch.float32: 1e-4}[dtype]
-  #assert relerr(ry, ty) < rtol
-  #assert relerr(rdx, tdx) < rtol
-  #assert relerr(rdw, tdw) < rtol
+  #print(relerr(rdw, tdw))
+  assert relerr(ry, ty) < rtol
+  assert relerr(rdx, tdx) < rtol
+  assert relerr(rdw, tdw) < rtol
   return r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time
 
 #############
@@ -432,6 +434,20 @@ def test_batchnorm(N, C, H, W):
   # assert relerr(ry, ty) < rtol
 
 
+################
+##   permute  ##
+################
+
+def test_permute(N, C, H, W, in_order, out_order):
+  dtype = torch.float32
+  shape  = (N, C, H, W)
+  stride_x = torch_blocksparse._permute.strides(N, C, H, W, in_order)
+  stride_y = torch_blocksparse._permute.strides(N, C, H, W, out_order)
+  x = torch.rand(N*C*H*W, requires_grad=True).as_strided(shape, stride_x).cuda().type(dtype)
+  ry = torch.empty_strided(shape, stride_y, device=x.device, dtype=dtype)
+  ry.copy_(x)
+  ty = torch_blocksparse._permute.apply(x, in_order, out_order)
+  print(relerr(ry, ty))
 
 
 #############
@@ -489,6 +505,44 @@ def resnet_50_shapes():
    (256, 2048, 7, 7, 512, 1, 1, (0, 0), (1, 1)), 
    (256, 512, 7, 7, 512, 3, 3, (1, 1), (1, 1))
    ]
+  
+def mobilenet_v2_shapes():
+  return [\
+    (256, 32, 32, 32, 32, 1, 1, (0, 0), (1, 1)),
+    (256, 32, 32, 32, 192, 1, 1, (0, 0), (1, 1)),
+    (256, 192, 32, 32, 32, 1, 1, (0, 0), (1, 1)),
+    (256, 32, 32, 32, 192, 1, 1, (0, 0), (1, 1)),
+    (256, 192, 32, 32, 32, 1, 1, (0, 0), (1, 1)),
+    (256, 32, 32, 32, 192, 1, 1, (0, 0), (1, 1)),
+    (256, 192, 16, 16, 32, 1, 1, (0, 0), (1, 1)),
+    (256, 32, 16, 16, 192, 1, 1, (0, 0), (1, 1)),
+    (256, 192, 16, 16, 32, 1, 1, (0, 0), (1, 1)),
+    (256, 32, 16, 16, 192, 1, 1, (0, 0), (1, 1)),
+    (256, 192, 16, 16, 32, 1, 1, (0, 0), (1, 1)),
+    (256, 32, 16, 16, 192, 1, 1, (0, 0), (1, 1)),
+    (256, 192, 8, 8, 64, 1, 1, (0, 0), (1, 1)),
+    (256, 64, 8, 8, 384, 1, 1, (0, 0), (1, 1)),
+    (256, 384, 8, 8, 64, 1, 1, (0, 0), (1, 1)),
+    (256, 64, 8, 8, 384, 1, 1, (0, 0), (1, 1)),
+    (256, 384, 8, 8, 64, 1, 1, (0, 0), (1, 1)),
+    (256, 64, 8, 8, 384, 1, 1, (0, 0), (1, 1)),
+    (256, 384, 8, 8, 64, 1, 1, (0, 0), (1, 1)),
+    (256, 64, 8, 8, 384, 1, 1, (0, 0), (1, 1)),
+    (256, 384, 8, 8, 128, 1, 1, (0, 0), (1, 1)),
+    (256, 128, 8, 8, 768, 1, 1, (0, 0), (1, 1)),
+    (256, 768, 8, 8, 128, 1, 1, (0, 0), (1, 1)),
+    (256, 128, 8, 8, 768, 1, 1, (0, 0), (1, 1)),
+    (256, 768, 8, 8, 128, 1, 1, (0, 0), (1, 1)),
+    (256, 128, 8, 8, 768, 1, 1, (0, 0), (1, 1)),
+    (256, 768, 4, 4, 160, 1, 1, (0, 0), (1, 1)),
+    (256, 160, 4, 4, 960, 1, 1, (0, 0), (1, 1)),
+    (256, 960, 4, 4, 160, 1, 1, (0, 0), (1, 1)),
+    (256, 160, 4, 4, 960, 1, 1, (0, 0), (1, 1)),
+    (256, 960, 4, 4, 160, 1, 1, (0, 0), (1, 1)),
+    (256, 160, 4, 4, 960, 1, 1, (0, 0), (1, 1)),
+    (256, 960, 4, 4, 320, 1, 1, (0, 0), (1, 1)),
+    (256, 320, 4, 4, 1280, 1, 1, (0, 0), (1, 1)),  
+  ]
 
 if __name__ == '__main__':
   # test softmax
@@ -499,12 +553,15 @@ if __name__ == '__main__':
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
-  test_conv2d(32, 8192, 15, 15, 16384, 1, 1, (0, 0), (1, 1), 0.90, 64) 
+  #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'CHWN') 
+  #test_conv2d(256, 256, 16, 16, 256, 1, 1, (0, 0), (1, 1), 0.0, 32, 'NCHW') 
+  test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
+  #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'NHWC') 
   #test_batchnorm(256, 32, 15, 15, )
-  #for (N, C, H, W, K, R, S, pad, stride) in resnet_50_shapes():
-    #print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
-    #r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time = test_conv2d(N, C, H, W, K, R, S, pad, stride, 0., 64)
-    #print('pass!')
-    #print(f'Y: {t_y_time/r_y_time:2.3f} ({t_y_time:2.4f}/{r_y_time:2.4f}),' 
-    #      f'DX: {t_dx_time/r_dx_time:2.3f} ({t_dx_time:2.4f}/{r_dx_time:2.4f}),'
-    #      f'DW: {t_dw_time/r_dw_time:2.3f} ({t_dw_time:2.4f}/{r_dw_time:2.4f})')
+  #for (N, C, H, W, K, R, S, pad, stride) in mobilenet_v2_shapes():
+  #  print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
+  #  r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time = test_conv2d(N, C, H, W, K, R, S, pad, stride, 0., 32, do_bench=False)
+  #  print('pass!')
+  #  #print(f'Y: {t_y_time/r_y_time:2.3f} ({t_y_time:2.4f}/{r_y_time:2.4f}),' 
+  #  #     f'DX: {t_dx_time/r_dx_time:2.3f} ({t_dx_time:2.4f}/{r_dx_time:2.4f}),'
+  #  #     f'DW: {t_dw_time/r_dw_time:2.3f} ({t_dw_time:2.4f}/{r_dw_time:2.4f})')
