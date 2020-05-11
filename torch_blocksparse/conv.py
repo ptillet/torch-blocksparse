@@ -653,13 +653,6 @@ class Conv2d(torch.nn.Module):
 
   sparse_conv2d = _sparse_conv2d.apply
 
-  @staticmethod
-  def nchw_to_chwn(x):
-    return x.permute(1,2,3,0).contiguous().permute(3,0,1,2)
-  
-  @staticmethod
-  def chwn_to_nchw(x):
-    return x.contiguous()
 
   def precompute_lut(self, order, nchwkrspq, dtype, block, stride_a, 
                      stride_h, stride_w, pad_h, pad_w):
