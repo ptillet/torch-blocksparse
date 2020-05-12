@@ -508,6 +508,8 @@ class _sparse_conv2d(torch.autograd.Function):
     stride_na, stride_ca, stride_ha, stride_wa = a.stride()
     if is_dx:
       for da_lut, da_num_locks, da_width, (a_pad_h, a_pad_w, off_bh, off_bw, off_ch, off_cw) in zip(lut, num_locks, width, da_offs):
+        if off_ch >= P or off_cw >= Q:
+          continue
         if da_lut is None:
           c[:, :, off_ch::stride_h, off_cw::stride_w] = 0
         else:
@@ -707,6 +709,10 @@ class Conv2d(torch.nn.Module):
   def __init__(self, in_channels, out_channels, kernel_size, layout, block, padding = (0,0), stride = (1,1), order='NHWC', bias = False):
     if order not in ['NHWC', 'CHWN']:
       raise ValueError('Only NHWC and CHWN orders are supported')
+    if in_channels % block != 0:
+      raise ValueError('Input channels must be multiple of block size')
+    if out_channels % block != 0:
+      raise ValueError('Output channels mut be multiple of block size')
     super(Conv2d, self).__init__()
     assert bias == False
     self.lut_cache = dict()
