@@ -715,8 +715,11 @@ class Conv2d(torch.nn.Module):
       raise ValueError('Input channels must be multiple of block size')
     if out_channels % block != 0:
       raise ValueError('Output channels mut be multiple of block size')
-    if out_channels // block != layout.shape[0] or in_channels // block != layout.shape[1]:
-      raise ValueError('Layout format is [out_channels//block, in_channels//block, R, S]')
+    if  out_channels // block != layout.shape[0] or in_channels // block != layout.shape[1]\
+     or kernel_size[0]        != layout.shape[2] or kernel_size[1]       != layout.shape[3]:
+      raise ValueError('Layout format is (out_channels//block, in_channels//block, kernel_size[0], kernel_size[1])')
+    if  layout.sum() == 0:
+      raise ValueError('Layout must have at least one nonzero element')
     super(Conv2d, self).__init__()
     assert bias == False
     self.lut_cache = dict()
