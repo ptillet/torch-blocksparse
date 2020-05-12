@@ -508,6 +508,8 @@ class _sparse_conv2d(torch.autograd.Function):
     stride_na, stride_ca, stride_ha, stride_wa = a.stride()
     if is_dx:
       for da_lut, da_num_locks, da_width, (a_pad_h, a_pad_w, off_bh, off_bw, off_ch, off_cw) in zip(lut, num_locks, width, da_offs):
+        if da_width == 0:
+          continue
         if off_ch >= P or off_cw >= Q:
           continue
         if da_lut is None:
