@@ -354,13 +354,13 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Tr
   return tuple(ret)
 
 def relerr(x, y):
-  x = x[x.abs() > 1e-5]
-  y = y[y.abs() > 1e-5]
+  x = x[x.abs() != 0]
+  y = y[y.abs() != 0]
   if x.shape != y.shape:
     return 1
   diff  = x - y
-  ewmax = torch.max(x.abs(), y.abs())
-  return (diff.abs() / ewmax).max().item()
+  ewmax = torch.max(x.abs(), y.abs()).max()
+  return (diff.abs().max() / ewmax).item()
 
 def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do_bench=True):
   dtype = torch.float32
@@ -431,8 +431,8 @@ def test_batchnorm(N, C, H, W):
   ty, tdx, ty_time, tdx_time = run_batchnorm2d_triton(x, dy, weight, bias, eps, momentum)
   rtol = {torch.float16: 1e-2,
           torch.float32: 1e-4}[dtype]
-  print((ry - ty).abs().max())
-  # assert relerr(ry, ty) < rtol
+  # print((ry - ty).abs().max())
+  assert relerr(ry, ty) < rtol
 
 
 ################
@@ -449,6 +449,92 @@ def test_permute(N, C, H, W, in_order, out_order):
   ry.copy_(x)
   ty = torch_blocksparse._permute.apply(x, in_order, out_order)
   print(relerr(ry, ty))
+
+##################
+## fused-conv2d ##
+##################
+
+def run_fused_conv2d_reference(x, w, biasa, biasb, dy, pad, stride, layout, block, do_bench = True):
+  # create conv2d
+  C, K, R, S = x.shape[1], dy.shape[1], layout.shape[2], layout.shape[3]
+  conv2d = torch.nn.Conv2d(w.shape[1], w.shape[0], (R, S), padding=pad, stride=stride, bias=False).cuda().type(w.dtype)
+  relu = torch.nn.ReLU(inplace=True)
+  conv2d.weight.data.copy_(mask_weights(w, layout, block))
+  # run conv2d
+  y = conv2d(relu(x + biasa) + biasb)
+  # backward
+  y.backward(dy)
+  dx = x.grad.clone()
+  dw = conv2d.weight.grad.clone()
+  dw = compress_weights(dw, layout, block)
+  dbiasa = biasa.grad.clone()
+  dbiasb = biasb.grad.clone()
+  # reset gradients
+  biasa.grad.zero_()
+  biasb.grad.zero_()
+  x.grad.zero_()
+  conv2d.weight.grad.zero_()
+  # done
+  return y, dx, dw, dbiasa, dbiasb
+
+def run_fused_conv2d_triton(x, w, biasa, biasb, dy, pad, stride, layout, block, order = 'CHWN', do_bench = True):
+  # create conv2d
+  N, C, H, W = x.shape
+  _, _, R, S = layout.shape
+  K = dy.shape[1]
+  if order == 'CHWN':
+    x = x.permute(1,2,3,0).contiguous().permute(3,0,1,2)
+    dy = dy.permute(1,2,3,0).contiguous().permute(3,0,1,2)
+    x.retain_grad()
+  conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda().type(w.dtype)
+  conv2d.weight.data.copy_(compress_weights(w, layout, block))
+  relu = torch.nn.ReLU(inplace=True)
+  # run conv2d
+  y = conv2d(x, biasa=biasa, biasb=biasb)
+  # backward
+  y.backward(dy)
+  dx = x.grad.clone()
+  dw = conv2d.weight.grad.clone()
+  dbiasa = biasa.grad.clone()
+  dbiasb = biasb.grad.clone()
+  # reset gradients
+  biasa.grad.zero_()
+  biasb.grad.zero_()
+  x.grad.zero_()
+  conv2d.weight.grad.zero_()
+  # done
+  return y, dx, dw, dbiasa, dbiasb
+
+def test_fused_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do_bench=True):
+  dtype = torch.float32
+  # probability distribution
+  probs = torch.Tensor([rho, 1-rho])
+  generator = torch.distributions.categorical.Categorical(probs)
+  # initialize tensors
+  layout = generator.sample((K//block, C//block, R, S))
+  layout.view(-1)[0] = 1
+  P = (H + 2*pad[0] - R)//stride[0] + 1
+  Q = (W + 2*pad[1] - S)//stride[1] + 1
+  device = 'cuda'
+  x = torch.randn((N, C, H, W), requires_grad=True, device=device, dtype=dtype)
+  w = torch.randn((K, C, R, S), requires_grad=True, device=device, dtype=dtype)
+  dy = torch.randn((N, K, P, Q), requires_grad=False, device=device, dtype=dtype)
+  biasa = torch.randn((1,), requires_grad=True, device=x.device, dtype=x.dtype)
+  biasb = torch.randn((1,), requires_grad=True, device=x.device, dtype=x.dtype)
+  # execute
+  ry, rdx, rdw, rdbiasa, rdbiasb = run_fused_conv2d_reference(x, w, biasa, biasb, dy, \
+                                                            pad, stride, layout, block, do_bench=do_bench)
+  ty, tdx, tdw, tdbiasa, tdbiasb = run_fused_conv2d_triton(x, w, biasa, biasb, dy, \
+                                                            pad, stride, layout, block, do_bench=do_bench)
+  rtol = {torch.float16: 1e-2,
+          torch.float32: 1e-4}[dtype]
+  assert relerr(ry, ty) < rtol
+  assert relerr(rdx, tdx) < rtol
+  assert relerr(rdw, tdw) < rtol
+  assert relerr(rdbiasa, tdbiasa) < rtol
+  assert relerr(rdbiasb, tdbiasb) < rtol
+  #return r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time
+
 
 
 #############
@@ -547,18 +633,17 @@ def mobilenet_v2_shapes():
 
 if __name__ == '__main__':
   # test softmax
-  # test_softmax(1, 12, 128, 128, 0.5, 0.4, 16)
+  #test_softmax(1, 12, 128, 128, 0.5, 0.4, 16)
   # # test matmul
-  # for mode in ['sdd', 'dsd', 'dds']:
+  #for mode in ['sdd', 'dsd', 'dds']:
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
-  test_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, 'CHWN') 
+  test_fused_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, 'CHWN') 
   #test_conv2d(256, 256, 16, 16, 256, 1, 1, (0, 0), (1, 1), 0.0, 32, 'NCHW') 
   #test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
   #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'NHWC') 
-  #test_batchnorm(256, 32, 15, 15, )
   #for (N, C, H, W, K, R, S, pad, stride) in mobilenet_v2_shapes():
   #  print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
   #  r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time = test_conv2d(N, C, H, W, K, R, S, pad, stride, 0., 32, do_bench=False)
