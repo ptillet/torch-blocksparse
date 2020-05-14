@@ -27,7 +27,10 @@ Inputs are FP32 or FP16 (with tensor cores).
 Torch-Blocksparse depends on CUDA 10.1 and the [Triton](https://github.com/ptillet/triton) language and compiler:
 ```
 sudo apt-get install llvm-8-dev;
+<<<<<<< HEAD
 pip install -r requirements.txt;
+=======
+>>>>>>> upstream/master
 python setup.py install;
 ```
 

@@ -12,74 +12,71 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   int pidz = get_program_id(1);
 
   // create index ranges
-  int rxm[TM]     = (pidhm*TM + (0 ... TM)) % BLOCK;
-  int rbm[TM]     = (pidhm*TM + (0 ... TM)) / BLOCK;
-  int rxn[TN]     = (0 ... TN) % BLOCK;
-  int rbn[TN]     = (0 ... TN) / BLOCK;
+  int rxm     = pidhm % BLOCK;
+  int rbm     = pidhm / BLOCK;
+  int rxn[TN] = (0 ... TN) % BLOCK;
+  int rbn[TN] = (0 ... TN) / BLOCK;
 
   // extract information from look-up table
-  int* header[TM] = LUT + rbm * 2;
-  int size[TM]    = *(header + 0);
-  int offset[TM]  = *(header + 1);
+  int* header = LUT + rbm * 2;
+  int size    = *(header + 0);
+  int offset  = *(header + 1);
 
-  bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
+  bool check[TN] = rbn < size;
+  int   rbmn[TN] = check ? rbn : size - 1;
 
   // block id and column id
-  long blockid[TM, TN]  = *(LUT + offset[:, newaxis] + rbn[newaxis, :]);
-  long columnid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis,:] + num_blocks);
-  long rowid[TM, TN]    = *(LUT + offset[:, newaxis] + rbn[newaxis, :] + num_blocks*2);
-
-  blockid  = check ? blockid  : 0;
-  columnid = check ? columnid : 0;
-  rowid    = check ? rowid    : 0;
+  long blockid [TN]  = *(LUT + offset + rbmn);
+  long columnid[TN]  = *(LUT + offset + rbmn + num_blocks);
+  long rowid   [TN]  = *(LUT + offset + rbmn + num_blocks*2);
 
   // pointers to key padding mask
-  TYPE* pkp_m[TM, TN]  = KP_M + pidz * stride_zkpm 
+  TYPE* pkp_m[TN]  = KP_M + pidz * stride_zkpm 
                               + columnid * BLOCK
-                              + rxn[newaxis, :];
+                              + rxn;
 
   // pointers to attention mask
-  TYPE* pattn_m[TM, TN] = ATTN_M + columnid * BLOCK 
+  TYPE* pattn_m[TN] = ATTN_M + columnid * BLOCK 
                                  + rowid * BLOCK * stride_zattnm
-                                 + rxm[:, newaxis] * stride_zattnm
-                                 + rxn[newaxis, :];
+                                 + rxm * stride_zattnm
+                                 + rxn;
 
   // pointers to X
-  TYPE* px[TM, TN]  = X + pidz * stride_zx
+  TYPE* px[TN]  = X + pidz * stride_zx
                         + blockid * BLOCK * BLOCK 
-                        + rxm[:,newaxis] * BLOCK 
-                        + rxn[newaxis,:];
+                        + rxm * BLOCK 
+                        + rxn;
 
   // load  input
-  TYPE x[TM, TN] =  check ? *px : -INFINITY;
+  TYPE x[TN] =  check ? *px : -INFINITY;
   // load key-padding mask
-  bool do_kp_mask[TM, TN] = KP_M;
-  TYPE kp_m[TM, TN] = (check && do_kp_mask)? *pkp_m : -INFINITY;
+  bool do_kp_mask[TN] = KP_M;
+  TYPE kp_m[TN] = (check && do_kp_mask)? *pkp_m : -INFINITY;
   // load attention mask
-  bool do_attn_mask[TM, TN] = ATTN_M;
-  TYPE attn_m[TM, TN] = (check && do_attn_mask)? *pattn_m : -INFINITY;
+  bool do_attn_mask[TN] = ATTN_M;
+  TYPE attn_m[TN] = (check && do_attn_mask)? *pattn_m : -INFINITY;
 
   // compute softmax in float
-  float Fkp_m[TM, TN] = kp_m;
-  float Fattn_m[TM, TN] = attn_m;
+  float Fkp_m[TN] = kp_m;
+  float Fattn_m[TN] = attn_m;
 #ifdef KP_MASK_MUL
-  Fkp_m = (Fkp_m == 0) ? (float[TM,TN])-INFINITY : 0;
+  Fkp_m = (Fkp_m == 0) ? (float[TN])-INFINITY : 0;
 #endif
 #ifdef ATTN_MASK_MUL
-  Fattn_m = (Fattn_m == 0) ? (float[TM,TN])-INFINITY : 0;
+  Fattn_m = (Fattn_m == 0) ? (float[TN])-INFINITY : 0;
 #endif
-  float Fx[TM, TN] = x;
+  float Fx[TN] = x;
   Fx = Fx * scale; // apply scale
   Fx = Fx + (do_kp_mask ? Fkp_m : 0); // apply key padding mask
   Fx = Fx + (do_attn_mask ? Fattn_m : 0); // apply attention mask
-  float Fxmax[TM]  = Fx[:, max];
-  float Fy[TM, TN] = exp(Fx - Fxmax[:, newaxis]);
-  float Fysum[TM] = (check ? Fy : 0)[:, +];
+  float Fxmax  = Fx[max];
+  float Fy[TN] = exp(Fx - Fxmax);
+  float Fysum = (check ? Fy : 0)[+];
 
   // write-back in half/float
-  TYPE y[TM, TN] = Fy;
-  TYPE ysum[TM] = Fysum;
-  *?(check)px = y / ysum[:, newaxis];
+  TYPE y[TN] = Fy;
+  TYPE ysum = Fysum;
+  *?(check)px = y / ysum;
 }
 '''
 
@@ -93,36 +90,39 @@ __global__ void softmax_bwd(TYPE * X, float scale,
     int pidz = get_program_id(1);
 
     // create index ranges
-    int rxm[TM] = (pidhm * TM + (0 ... TM)) % BLOCK;
-    int rbm[TM] = (pidhm * TM + (0 ... TM)) / BLOCK;
+    int rxm = pidhm % BLOCK;
+    int rbm = pidhm / BLOCK;
     int rxn[TN] = (0 ... TN) % BLOCK;
     int rbn[TN] = (0 ... TN) / BLOCK;
 
     // extract information from look-up table
-    int* header[TM] = LUT + rbm * 2;
-    int size[TM] = *(header + 0);
-    int offset[TM] = *(header + 1);
+    int* header = LUT + rbm * 2;
+    int size    = *(header + 0);
+    int offset  = *(header + 1);
+
+    // bounds checking on lut
+    bool check[TN] = rbn < size;
+    int rbmn[TN] = check ? rbn : size - 1;
 
     // initialize pointers to block-sparse input
-    long blockid[TM, TN] = *(LUT + offset[:, newaxis] + rbn[newaxis, :]);
+    long blockid[TN] = *(LUT + offset + rbmn);
 
-    TYPE* px[TM, TN] = X + pidz * stride_zx
+    TYPE* px[TN] = X + pidz * stride_zx
                          + blockid * BLOCK * BLOCK
-                         + rxm[:, newaxis] * BLOCK
-                         + rxn[newaxis, :];
+                         + rxm * BLOCK
+                         + rxn;
 
-    TYPE* pdx[TM, TN] = DX + pidz * stride_zdx
+    TYPE* pdx[TN] = DX + pidz * stride_zdx
                            + blockid * BLOCK * BLOCK
-                           + rxm[:, newaxis] * BLOCK
-                           + rxn[newaxis, :];
+                           + rxm * BLOCK
+                           + rxn;
 
     // compute fused softmax backward
-    bool check[TM, TN] = rbn[newaxis, :] < size[:, newaxis];
-    TYPE x[TM, TN] = check ? *px : 0;
-    TYPE dx[TM, TN] = check ? *pdx : 0;
-    TYPE xdx[TM, TN] = x * dx;
-    TYPE xdxsum[TM] = (check ? xdx : 0)[:, +];
-    TYPE y[TM, TN] = x * (dx - xdxsum[:, newaxis]) * scale;
+    TYPE x[TN] = check ? *px : 0;
+    TYPE dx[TN] = check ? *pdx : 0;
+    TYPE xdx[TN] = x * dx;
+    TYPE xdxsum = (check ? xdx : 0)[+];
+    TYPE y[TN] = x * (dx - xdxsum) * scale;
 
     // write-back
     *? (check)pdx = y;
@@ -153,7 +153,6 @@ class _sparse_softmax(torch.autograd.Function):
         offsets += 2*sizes.numel()
         header = torch.stack((sizes, offsets), dim=1).view(-1)
         lut = torch.cat((header, idx, columns, rows)).type(torch.int32).cuda()
-
         return lut, sizes.max()
 
     @staticmethod
@@ -190,7 +189,7 @@ class _sparse_softmax(torch.autograd.Function):
     def forward(ctx, x, scale, key_padding_mask, attn_mask, kp_mask_mode, attn_mask_mode,
                 spdims, block, lut, num_blocks, maxlut, bench, time):
         # run kernel
-        kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block,
+        kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block, 
                                              kp_mask_mode, attn_mask_mode)
         M = x.shape[0]
         grid = lambda opt: [triton.cdiv(spdims[0] * spdims[1] * block, opt.d('TM')), M]
@@ -215,21 +214,21 @@ class _sparse_softmax(torch.autograd.Function):
         ctx.kp_mask_mode = kp_mask_mode
         ctx.attn_mask_mode = attn_mask_mode
         return x
-
+    
     @staticmethod
     def backward(ctx, dx):
         # retrieve from context
         x, lut = ctx.saved_tensors
         # run kernel
-        kernel = _sparse_softmax.make_kernel(bwd_kernels, bwd_src, ctx.maxlut*ctx.block, x.dtype, ctx.block,
+        kernel = _sparse_softmax.make_kernel(bwd_kernels, bwd_src, ctx.maxlut*ctx.block, x.dtype, ctx.block, 
                                              ctx.kp_mask_mode, ctx.attn_mask_mode)
         M = x.shape[0]
         grid = lambda opt: [triton.cdiv(ctx.spdims[0] * ctx.spdims[1] * ctx.block, opt.d('TM')), M]
         kernel(x, ctx.scale, dx, lut, ctx.maxlut, x.stride(0), dx.stride(0), grid=grid)
         return dx, None, None, None, None, None, None, None, None, None, None, None, None
 
-class SparseSoftmax:
-
+class Softmax:
+    
     sparse_softmax = _sparse_softmax.apply
 
     def __init__(self, layout, block, bench = False):
@@ -238,14 +237,18 @@ class SparseSoftmax:
         self.spdims = layout.shape
         self.block = block
         self.bench = bench
-
-    def __call__(self, x, scale = 1., key_padding_mask = None, attn_mask = None,
+    
+    def __call__(self, x, scale = 1., key_padding_mask = None, attn_mask = None, 
                  key_padding_mask_mode='add', attn_mask_mode='add'):
         time_y = [None]
-        x = SparseSoftmax.sparse_softmax(x, scale, key_padding_mask, attn_mask,
+        if attn_mask is not None and attn_mask.dtype != x.dtype:
+            raise ValueError('Attention mask must be float32')
+        if key_padding_mask is not None and key_padding_mask.dtype != x.dtype:
+            raise ValueError('Key padding mask must be float32')
+        x = Softmax.sparse_softmax(x, scale, key_padding_mask, attn_mask, 
                                   key_padding_mask_mode, attn_mask_mode,
                                   self.spdims, self.block,
-                                  self.fwd_lut, self.num_blocks,
+                                  self.fwd_lut, self.num_blocks, 
                                   self.fwd_maxlut, self.bench, time_y)
         self.time_y = time_y[0]
         return x
