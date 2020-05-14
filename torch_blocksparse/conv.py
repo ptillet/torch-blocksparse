@@ -7,6 +7,8 @@ src = '''
   __global__ void NAME (TYPE* A __readonly  __noalias __aligned(16),
                         TYPE* B __readonly  __noalias __aligned(16),
                         TYPE* C __noalias __aligned(16),
+                        TYPE* X __readonly __noalias __aligned(16),
+                        TYPE* dbias0, TYPE* dbias1,
                         TYPE bias0, TYPE bias1,
                         // shapes
                         int H, int W, int R, int S, int CC __multipleof(BLOCK),
@@ -127,7 +129,7 @@ src = '''
     bool checkb[TL, TN] = 1;
     TYPE a[TM, TL] = checka ? *pa : 0;
     TYPE b[TL, TN] = checkb ? *pb : 0;
-#ifdef MODE_FIXUP_A
+#ifdef FIXUP_A
     a += bias0;
     a = (a > 0) ? a : 0;
     a += bias1;
@@ -186,11 +188,12 @@ src = '''
       bool checkb[TL, TN] = checkbn[newaxis, :] && checkbl[:, newaxis];
       a = checka ? *pa : 0;
       b = checkb ? *pb : 0;
-#ifdef MODE_FIXUP_A
+#ifdef FIXUP_A
       a += bias0;
+      a = (a > 0) ? a : 0;
+      a += bias1;
 #endif
     }
-    TYPE c[TM, TN] = acc;
 
     /* ---------------- */
     /*    Epilogue      */
@@ -211,6 +214,14 @@ src = '''
                          + rc_k[newaxis, :] * STRIDE_KC;
     TYPE* pc[TM, TN] = C + offc;
     bool checkc[TM, TN] = rc_npq[:, newaxis] < N*P*Q;
+#endif
+    TYPE c[TM, TN] = acc;
+#ifdef FIXUP_A_DX
+    TYPE* px[TM, TN] = X + offc;
+    TYPE   x[TM, TN] = *px;
+    f32_atomic_add(dbias1, ((TYPE[TM*TN])c)[+]);
+    c = (x + bias0 > 0) ? c : 0;
+    f32_atomic_add(dbias0, ((TYPE[TM*TN])c)[+]);
 #endif
     // write-back directly
     if(lockid == 0) {
@@ -450,7 +461,7 @@ class _sparse_conv2d(torch.autograd.Function):
     has_bias0 = bias0 is not None
     has_bias1 = bias1 is not None
     if mode == 'FIXUP_A':
-      defines['DO_BIAS0'] = True
+      defines['FIXUP_A'] = True
     cache = _sparse_conv2d.sdd_cache
     kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a_dtype), num_warps=[2, 4])
     # create semaphores
@@ -460,7 +471,10 @@ class _sparse_conv2d(torch.autograd.Function):
     stride_nc, stride_kc, stride_pc, stride_qc = b.stride()
     bias0 = bias0.item()
     bias1 = bias1.item()
-    kernel(a, b, c, bias0, bias1,
+    x = torch.empty((0,), device=a.device, dtype=a.dtype)
+    dbias0 = torch.empty((0,), device=a.device, dtype=a.dtype)
+    dbias1 = torch.empty((0,), device=a.device, dtype=a.dtype)
+    kernel(a, b, c, x, dbias0, dbias1, bias0, bias1,
           H, W, R, S, C,
           Na, P, Q, K,
           pad_h, pad_w, stride_h, stride_w,
@@ -483,7 +497,7 @@ class _sparse_conv2d(torch.autograd.Function):
 
   # Dense = Dense x Sparse
   @staticmethod
-  def _dds_conv2d(a, b, bias0, bias1, 
+  def _dds_conv2d(a, b, x, bias0, bias1, 
                   mode, order, nchwkrspq,
                   pad_h, pad_w, stride_h, stride_w,
                   is_dx, layout, block, 
@@ -500,7 +514,7 @@ class _sparse_conv2d(torch.autograd.Function):
     has_bias1 = bias1 is not None
     defines = {'NAME': 'dds_conv2d_' + ('_dx' if is_dx else '_y'), 
                'TYPE': a.dtype,
-               'TM': [64, 128, 256], 
+               'TM': [128], 
                'TL': step, 
                'TN': block, 
                'BLOCK': block,
@@ -515,23 +529,27 @@ class _sparse_conv2d(torch.autograd.Function):
                'STRIDE_HC': 'stride_hc',
                'STRIDE_WC': 'stride_wc'}
     if mode == 'FIXUP_A' and not is_dx:
-      defines['DO_BIAS0'] = True
-      defines['DO_RELU'] = True
-      defines['DO_BIAS1'] = True
+      defines['FIXUP_A'] = True
+    if mode == 'FIXUP_A' and is_dx:
+      defines['FIXUP_A_DX'] = True
     if is_dx:
       defines['DX'] = True
       defines['TRANSFORM_H'] = 'rc_p * stride_h + pad_h'
     cache = _sparse_conv2d.dds_cache
-    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a.dtype, is_dx, mode), num_warps=[2, 4])
+    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a.dtype, is_dx, mode), num_warps=[4])
     # create output
     if order == 'NHWC':
       c = torch.zeros(N, P, Q, K, dtype=a.dtype, device=a.device).permute(0,3,1,2)
     if order == 'CHWN':
       c = torch.zeros(K, P, Q, N, dtype=a.dtype, device=a.device).permute(3,0,1,2)
+    if x is None:
+      x = torch.empty((0,), device=a.device, dtype=a.dtype)
     stride_na, stride_ca, stride_ha, stride_wa = a.stride()
     bias0 = bias0.item()
     bias1 = bias1.item()
     if is_dx:
+      dbias0 = torch.zeros((1,), device=a.device, dtype=a.dtype)
+      dbias1 = torch.zeros((1,), device=a.device, dtype=a.dtype)
       for da_lut, da_num_locks, da_width, (a_pad_h, a_pad_w, off_bh, off_bw, off_ch, off_cw) in zip(lut, num_locks, width, da_offs):
         if da_width == 0:
           continue
@@ -544,7 +562,7 @@ class _sparse_conv2d(torch.autograd.Function):
           cc = c[:, :, off_ch::stride_h, off_cw::stride_w]
           stride_nc, stride_kc, stride_pc, stride_qc = cc.stride()
           N, K, P, Q = cc.shape
-          kernel(a, b, cc, bias0, bias1,
+          kernel(a, b, cc, x, dbias0, dbias1, bias0, bias1,
                 H, W, R, S, C,
                 N, P, Q, K,
                 a_pad_h, a_pad_w, 
@@ -554,10 +572,13 @@ class _sparse_conv2d(torch.autograd.Function):
                 da_lut, da_locks, da_num_locks, 
                 grid = lambda opt: [da_width, triton.cdiv(N*P*Q, opt.d('TM'))], 
                 bench = bench)
+      return c, dbias0, dbias1
     else:
+      dbias0 = torch.empty((0,), device=a.device, dtype=a.dtype)
+      dbias1 = torch.empty((0,), device=a.device, dtype=a.dtype)
       stride_nc, stride_kc, stride_pc, stride_qc = c.stride()
       locks = _sparse_conv2d.get_locks(a.device, 2*width*num_locks*N*P*Q)
-      kernel(a, b, c, bias0, bias1,
+      kernel(a, b, c, x, dbias0, dbias1, bias0, bias1,
             H, W, R, S, C,
             N, P, Q, K,
             pad_h, pad_w, stride_h, stride_w,
@@ -567,7 +588,7 @@ class _sparse_conv2d(torch.autograd.Function):
             grid = lambda opt: [width, triton.cdiv(N*P*Q, opt.d('TM'))], 
             bench = bench)
 
-    return c
+      return c
 
   
   @staticmethod
@@ -585,7 +606,7 @@ class _sparse_conv2d(torch.autograd.Function):
     # N, C, H, W, K, R, S, P, Q = nchwkrspq
     # ctx.save_for_backward(a, b)
     # return torch.empty(N, K, P, Q, dtype=a.dtype, device=a.device).contiguous(memory_format=torch.channels_last)
-    c = _sparse_conv2d._dds_conv2d(a, b, bias0, bias1, mode, order,
+    c = _sparse_conv2d._dds_conv2d(a, b, None, bias0, bias1, mode, order,
                                    nchwkrspq, pad_h, pad_w, stride_h, stride_w,
                                    False, layout, block, 
                                    c_step, c_lut, c_num_locks, c_width, None,
@@ -632,10 +653,10 @@ class _sparse_conv2d(torch.autograd.Function):
     a, b, bias0, bias1 = ctx.saved_tensors
     # gradients w.r.t. a
     da = None
-    dbias0 = torch.zeros_like(bias0)
-    dbias1 = torch.zeros_like(bias1)
+    dbias0 = None
+    dbias1 = None
     if ctx.needs_input_grad[0]:
-      da = _sparse_conv2d._dds_conv2d(dc, b, bias0, bias1, ctx.mode, ctx.order, ctx.nchwkrspq, ctx.pad_h, ctx.pad_w, ctx.stride_h, ctx.stride_w,
+      da, dbias0, dbias1 = _sparse_conv2d._dds_conv2d(dc, b, a, bias0, bias1, ctx.mode, ctx.order, ctx.nchwkrspq, ctx.pad_h, ctx.pad_w, ctx.stride_h, ctx.stride_w,
                        True, ctx.layout, ctx.block, 
                        ctx.da_step, ctx.da_lut, ctx.da_num_locks, ctx.da_width, ctx.da_offs,
                        ctx.bench, ctx.da_time)

@@ -528,6 +528,8 @@ def test_fused_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHW
                                                             pad, stride, layout, block, do_bench=do_bench)
   rtol = {torch.float16: 1e-2,
           torch.float32: 1e-4}[dtype]
+  print(rdbiasa, tdbiasa)
+  print(rdbiasb, tdbiasb)
   assert relerr(ry, ty) < rtol
   assert relerr(rdx, tdx) < rtol
   assert relerr(rdw, tdw) < rtol
