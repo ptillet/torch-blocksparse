@@ -469,8 +469,8 @@ class _sparse_conv2d(torch.autograd.Function):
     # create output
     stride_na, stride_ca, stride_ha, stride_wa = a.stride()
     stride_nc, stride_kc, stride_pc, stride_qc = b.stride()
-    bias0 = bias0.item()
-    bias1 = bias1.item()
+    bias0 = bias0.item() if has_bias0 else 0
+    bias1 = bias1.item() if has_bias1 else 0
     x = torch.empty((0,), device=a.device, dtype=a.dtype)
     dbias0 = torch.empty((0,), device=a.device, dtype=a.dtype)
     dbias1 = torch.empty((0,), device=a.device, dtype=a.dtype)
@@ -545,8 +545,8 @@ class _sparse_conv2d(torch.autograd.Function):
     if x is None:
       x = torch.empty((0,), device=a.device, dtype=a.dtype)
     stride_na, stride_ca, stride_ha, stride_wa = a.stride()
-    bias0 = bias0.item()
-    bias1 = bias1.item()
+    bias0 = bias0.item() if has_bias0 else 0
+    bias1 = bias1.item() if has_bias1 else 0
     if is_dx:
       dbias0 = torch.zeros((1,), device=a.device, dtype=a.dtype)
       dbias1 = torch.zeros((1,), device=a.device, dtype=a.dtype)
@@ -572,6 +572,10 @@ class _sparse_conv2d(torch.autograd.Function):
                 da_lut, da_locks, da_num_locks, 
                 grid = lambda opt: [da_width, triton.cdiv(N*P*Q, opt.d('TM'))], 
                 bench = bench)
+      if not has_bias0:
+        dbias0 = None
+      if not has_bias1:
+        dbias1 = None
       return c, dbias0, dbias1
     else:
       dbias0 = torch.empty((0,), device=a.device, dtype=a.dtype)
@@ -758,9 +762,11 @@ class Conv2d(torch.nn.Module):
                              db_step, db_lut, db_num_locks, db_width)
     return self.lut_cache[key]
 
-  def __init__(self, in_channels, out_channels, kernel_size, layout, block, padding = (0,0), stride = (1,1), mode = 'FIXUP_A', order='NHWC', bias = False):
+  def __init__(self, in_channels, out_channels, kernel_size, layout, block, padding = (0,0), stride = (1,1), mode = 'STANDARD', order='NHWC', bias = False):
+    if mode not in ['STANDARD', 'FIXUP_A']:
+      raise ValueError('Mode must be one of: STANDARD, FIXUP_A')
     if order not in ['NHWC', 'CHWN']:
-      raise ValueError('Only NHWC and CHWN orders are supported')
+      raise ValueError('Order must be one of: NHWC, CHWN')
     if in_channels % block != 0:
       raise ValueError('Input channels must be multiple of block size')
     if out_channels % block != 0:
