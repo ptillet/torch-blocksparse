@@ -33,6 +33,15 @@ def sparse_to_dense(w, mask, block, zero = 0):
           #maskedw[wz, wh, wi : wi+block, wj : wj+block] *= mask[bh, bi, bj]
   return maskedw
 
+def relerr(x, y):
+  x = x[x.abs() != 0]
+  y = y[y.abs() != 0]
+  if x.shape != y.shape:
+    return 1
+  diff  = x - y
+  ewmax = torch.max(x.abs(), y.abs()).max()
+  return (diff.abs().max() / ewmax).item()
+
 ##########
 # MatMul #
 ##########
@@ -253,22 +262,36 @@ def compress_weights(w, layout, block):
           current += 1
   return blocks
 
-def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = True):
+def run_conv2d_reference(x, w, biasa, biasb, dy, pad, stride, layout, block, do_bench):
   # create conv2d
   C, K, R, S = x.shape[1], dy.shape[1], layout.shape[2], layout.shape[3]
   conv2d = torch.nn.Conv2d(w.shape[1], w.shape[0], (R, S), padding=pad, stride=stride, bias=False).cuda().type(w.dtype)
+  relu = torch.nn.ReLU(inplace=True)
   conv2d.weight.data.copy_(mask_weights(w, layout, block))
   # run conv2d
-  y = conv2d(x)
+  u = x
+  if biasa is not None:
+    u = relu(x + biasa)
+  if biasb is not None:
+    u = u + biasb
+  y = conv2d(u)
   # backward
   y.backward(dy)
   dx = x.grad.clone()
   dw = conv2d.weight.grad.clone()
   dw = compress_weights(dw, layout, block)
+  dbiasa, dbiasb = None, None
+  if biasa is not None:
+    dbiasa = biasa.grad.clone()
+    biasa.grad.zero_()
+  if biasb is not None:
+    dbiasb = biasb.grad.clone()
+    biasb.grad.zero_()
+  # reset gradients
   x.grad.zero_()
   conv2d.weight.grad.zero_()
   # benchmark
-  ret = [y, dx, dw, None, None, None]
+  time_y, time_dx, time_dw = None, None, None
   if do_bench:
     repeat = 10
     x = torch.rand_like(x)
@@ -280,7 +303,7 @@ def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = True):
     for i in range(repeat):
       y = conv2d(x)
     torch.cuda.synchronize()
-    ret[3] = (time() - y_start) / repeat
+    time_y = (time() - y_start) / repeat
     # time data gradient
     conv2d.weight.requires_grad_(False)
     x.requires_grad_(True)
@@ -289,7 +312,7 @@ def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = True):
     for i in range(repeat):
       y.backward(dy, retain_graph=True)
     torch.cuda.synchronize()
-    ret[4] = (time() - dx_start) / repeat
+    time_dx = (time() - dx_start) / repeat
     # time weight gradient
     conv2d.weight.requires_grad_(True)
     x.requires_grad_(False)
@@ -298,10 +321,10 @@ def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = True):
     for i in range(repeat):
       y.backward(dy, retain_graph=True)
     torch.cuda.synchronize()
-    ret[5] = (time() - dw_start) / repeat
-  return tuple(ret)
+    time_dw = (time() - dw_start) / repeat
+  return y, dx, dw, dbiasa, dbiasb, time_y, time_dx, time_dw
 
-def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = True):
+def run_conv2d_triton(x, w, biasa, biasb, dy, pad, stride, layout, block, order, do_bench):
   # create conv2d
   N, C, H, W = x.shape
   _, _, R, S = layout.shape
@@ -312,15 +335,25 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Tr
     x.retain_grad()
   conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda().type(w.dtype)
   conv2d.weight.data.copy_(compress_weights(w, layout, block))
-  y = conv2d(x)
+  relu = torch.nn.ReLU(inplace=True)
+  # run conv2d
+  y = conv2d(x, biasa=biasa, biasb=biasb)
   # backward
   y.backward(dy)
   dx = x.grad.clone()
   dw = conv2d.weight.grad.clone()
+  dbiasa, dbiasb = None, None
+  if biasa is not None:
+    dbiasa = biasa.grad.clone()
+    biasa.grad.zero_()
+  if biasb is not None:
+    dbiasb = biasb.grad.clone()
+    biasb.grad.zero_()
+  # reset gradients
   x.grad.zero_()
   conv2d.weight.grad.zero_()
   # benchmark
-  ret = [y, dx, dw, None, None, None]
+  time_y, time_dx, time_dw = None, None, None
   if do_bench:
     repeat = 10
     x = torch.empty_strided(x.shape, x.stride(), dtype=x.dtype, device=x.device)
@@ -332,7 +365,7 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Tr
     for i in range(repeat):
       y = conv2d(x)
     torch.cuda.synchronize()
-    ret[3] = (time() - y_start) / repeat
+    time_y = (time() - y_start) / repeat
     # time data gradient
     conv2d.weight.requires_grad_(False)
     x.requires_grad_(True)
@@ -341,7 +374,7 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Tr
     for i in range(repeat):
       y.backward(dy, retain_graph=True)
     torch.cuda.synchronize()
-    ret[4] = (time() - dx_start) / repeat
+    time_dx = (time() - dx_start) / repeat
     # time weight gradient
     conv2d.weight.requires_grad_(True)
     x.requires_grad_(False)
@@ -350,19 +383,10 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Tr
     for i in range(repeat):
       y.backward(dy, retain_graph=True)
     torch.cuda.synchronize()
-    ret[5] = (time() - dw_start) / repeat
-  return tuple(ret)
+    time_dw = (time() - dw_start) / repeat
+  return y, dx, dw, dbiasa, dbiasb, time_y, time_dx, time_dw
 
-def relerr(x, y):
-  x = x[x.abs() != 0]
-  y = y[y.abs() != 0]
-  if x.shape != y.shape:
-    return 1
-  diff  = x - y
-  ewmax = torch.max(x.abs(), y.abs()).max()
-  return (diff.abs().max() / ewmax).item()
-
-def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do_bench=True):
+def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, do_biasa, do_biasb, order = 'CHWN', do_bench=False):
   dtype = torch.float32
   # probability distribution
   probs = torch.Tensor([rho, 1-rho])
@@ -372,21 +396,29 @@ def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do
   layout.view(-1)[0] = 1
   P = (H + 2*pad[0] - R)//stride[0] + 1
   Q = (W + 2*pad[1] - S)//stride[1] + 1
-  x = torch.rand((N, C, H, W), requires_grad=True).cuda().type(dtype)
-  w = torch.rand((K, C, R, S), requires_grad=True).cuda().type(dtype)
-  dy = torch.rand((N, K, P, Q)).cuda().type(dtype)
-  x.retain_grad()
+  device = 'cuda'
+  x = torch.randn((N, C, H, W), requires_grad=True, device=device, dtype=dtype)
+  w = torch.randn((K, C, R, S), requires_grad=True, device=device, dtype=dtype)
+  dy = torch.randn((N, K, P, Q), requires_grad=False, device=device, dtype=dtype)
+  biasa, biasb = None, None
+  if do_biasa:
+    biasa = torch.randn((1,), requires_grad=True, device=x.device, dtype=x.dtype)
+  if do_biasb:
+    biasb = torch.randn((1,), requires_grad=True, device=x.device, dtype=x.dtype)
   # execute
-  ry, rdx, rdw, r_y_time, r_dx_time, r_dw_time = run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench=do_bench)
-  ty, tdx, tdw, t_y_time, t_dx_time, t_dw_time = run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench=do_bench)
+  ry, rdx, rdw, rdbiasa, rdbiasb, rtimey, rtimedx, rtimedw = run_conv2d_reference(x, w, biasa, biasb, dy, \
+                                                              pad, stride, layout, block, do_bench=do_bench)
+  ty, tdx, tdw, tdbiasa, tdbiasb, ttimey, ttimedx, ttimedw = run_conv2d_triton(x, w, biasa, biasb, dy, \
+                                                           pad, stride, layout, block, order, do_bench=do_bench)
   rtol = {torch.float16: 1e-2,
           torch.float32: 1e-4}[dtype]
-  #print(ry)
-  #print(ty)
   assert relerr(ry, ty) < rtol
   assert relerr(rdx, tdx) < rtol
   assert relerr(rdw, tdw) < rtol
-  return r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time
+  if do_biasa:
+    assert relerr(rdbiasa, tdbiasa) < rtol
+  if do_biasb:
+    assert relerr(rdbiasb, tdbiasb) < rtol
 
 #############
 # BatchNorm #
@@ -454,108 +486,13 @@ def test_permute(N, C, H, W, in_order, out_order):
 ## fused-conv2d ##
 ##################
 
-def run_fused_conv2d_reference(x, w, biasa, biasb, dy, pad, stride, layout, block, do_bench = True):
-  # create conv2d
-  C, K, R, S = x.shape[1], dy.shape[1], layout.shape[2], layout.shape[3]
-  conv2d = torch.nn.Conv2d(w.shape[1], w.shape[0], (R, S), padding=pad, stride=stride, bias=False).cuda().type(w.dtype)
-  relu = torch.nn.ReLU(inplace=True)
-  conv2d.weight.data.copy_(mask_weights(w, layout, block))
-  # run conv2d
-  u = x
-  if biasa is not None:
-    u = relu(x + biasa)
-  if biasb is not None:
-    u = u + biasb
-  y = conv2d(u)
-  # backward
-  y.backward(dy)
-  dx = x.grad.clone()
-  dw = conv2d.weight.grad.clone()
-  dw = compress_weights(dw, layout, block)
-  dbiasa, dbiasb = None, None
-  if biasa is not None:
-    dbiasa = biasa.grad.clone()
-    biasa.grad.zero_()
-  if biasb is not None:
-    dbiasb = biasb.grad.clone()
-    biasb.grad.zero_()
-  # reset gradients
-  x.grad.zero_()
-  conv2d.weight.grad.zero_()
-  # done
-  return y, dx, dw, dbiasa, dbiasb
 
-def run_fused_conv2d_triton(x, w, biasa, biasb, dy, pad, stride, layout, block, order = 'CHWN', do_bench = True):
-  # create conv2d
-  N, C, H, W = x.shape
-  _, _, R, S = layout.shape
-  K = dy.shape[1]
-  if order == 'CHWN':
-    x = x.permute(1,2,3,0).contiguous().permute(3,0,1,2)
-    dy = dy.permute(1,2,3,0).contiguous().permute(3,0,1,2)
-    x.retain_grad()
-  conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda().type(w.dtype)
-  conv2d.weight.data.copy_(compress_weights(w, layout, block))
-  relu = torch.nn.ReLU(inplace=True)
-  # run conv2d
-  y = conv2d(x, biasa=biasa, biasb=biasb)
-  # backward
-  y.backward(dy)
-  dx = x.grad.clone()
-  dw = conv2d.weight.grad.clone()
-  dbiasa, dbiasb = None, None
-  if biasa is not None:
-    dbiasa = biasa.grad.clone()
-    biasa.grad.zero_()
-  if biasb is not None:
-    dbiasb = biasb.grad.clone()
-    biasb.grad.zero_()
-  # reset gradients
-  x.grad.zero_()
-  conv2d.weight.grad.zero_()
-  # done
-  return y, dx, dw, dbiasa, dbiasb
-
-def test_fused_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, do_biasa, do_biasb, order = 'CHWN', do_bench=True):
-  dtype = torch.float32
-  # probability distribution
-  probs = torch.Tensor([rho, 1-rho])
-  generator = torch.distributions.categorical.Categorical(probs)
-  # initialize tensors
-  layout = generator.sample((K//block, C//block, R, S))
-  layout.view(-1)[0] = 1
-  P = (H + 2*pad[0] - R)//stride[0] + 1
-  Q = (W + 2*pad[1] - S)//stride[1] + 1
-  device = 'cuda'
-  x = torch.randn((N, C, H, W), requires_grad=True, device=device, dtype=dtype)
-  w = torch.randn((K, C, R, S), requires_grad=True, device=device, dtype=dtype)
-  dy = torch.randn((N, K, P, Q), requires_grad=False, device=device, dtype=dtype)
-  biasa, biasb = None, None
-  if do_biasa:
-    biasa = torch.randn((1,), requires_grad=True, device=x.device, dtype=x.dtype)
-  if do_biasb:
-    biasb = torch.randn((1,), requires_grad=True, device=x.device, dtype=x.dtype)
-  # execute
-  ry, rdx, rdw, rdbiasa, rdbiasb = run_fused_conv2d_reference(x, w, biasa, biasb, dy, \
-                                                              pad, stride, layout, block, do_bench=do_bench)
-  ty, tdx, tdw, tdbiasa, tdbiasb = run_fused_conv2d_triton(x, w, biasa, biasb, dy, \
-                                                           pad, stride, layout, block, order, do_bench=do_bench)
-  rtol = {torch.float16: 1e-2,
-          torch.float32: 1e-4}[dtype]
-  assert relerr(ry, ty) < rtol
-  assert relerr(rdx, tdx) < rtol
-  assert relerr(rdw, tdw) < rtol
-  if do_biasa:
-    assert relerr(rdbiasa, tdbiasa) < rtol
-  if do_biasb:
-    assert relerr(rdbiasb, tdbiasb) < rtol
-  #return r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time
 
 #############
 ##   ReLU  ##
 #############
 
-def run_fused_relu_reference(x, res, bias, scale, dy):
+def run_relu_reference(x, res, bias, scale, dy):
   relu = torch.nn.ReLU()
   y = relu(x*scale + bias + res)
   y.backward(dy)
@@ -571,7 +508,7 @@ def run_fused_relu_reference(x, res, bias, scale, dy):
   scale.grad.zero_()
   return y, dx, res, dbias, dscale
 
-def run_fused_relu_triton(x, res, bias, scale, dy):
+def run_relu_triton(x, res, bias, scale, dy):
   relu = torch_blocksparse.ReLU()
   y = relu(x, scale, bias, res)
   y.backward(dy)
@@ -587,7 +524,7 @@ def run_fused_relu_triton(x, res, bias, scale, dy):
   scale.grad.zero_()
   return y, dx, res, dbias, dscale
 
-def test_fused_relu(N, C, H, W):
+def test_relu(N, C, H, W):
   dtype = torch.float32
   device = 'cuda'
   x = torch.randn((N, C, H, W), requires_grad=True, device=device, dtype=dtype)
@@ -596,8 +533,8 @@ def test_fused_relu(N, C, H, W):
   bias = torch.randn((1,), requires_grad=True, device=device, dtype=dtype)
   scale = torch.randn((1,), requires_grad=True, device=device, dtype=dtype)
   # execute
-  ry, rdx, rdres, rdbias, rdscale = run_fused_relu_reference(x, res, bias, scale, dy)
-  ty, tdx, tdres, tdbias, tdscale = run_fused_relu_triton(x, res, bias, scale, dy)
+  ry, rdx, rdres, rdbias, rdscale = run_relu_reference(x, res, bias, scale, dy)
+  ty, tdx, tdres, tdbias, tdscale = run_relu_triton(x, res, bias, scale, dy)
   rtol = {torch.float16: 1e-2,
           torch.float32: 1e-4}[dtype]
   assert(relerr(ry, ty) < rtol)
@@ -711,8 +648,8 @@ if __name__ == '__main__':
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
-  test_fused_relu(32, 256, 15, 15)
-  test_fused_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, False, False, order='CHWN') 
+  test_relu(32, 256, 15, 15)
+  test_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, True, True, order='CHWN') 
   #test_conv2d(256, 256, 16, 16, 256, 1, 1, (0, 0), (1, 1), 0.0, 32, 'NCHW') 
   #test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
   #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'NHWC') 
