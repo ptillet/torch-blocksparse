@@ -242,9 +242,9 @@ class Softmax:
                  key_padding_mask_mode='add', attn_mask_mode='add'):
         time_y = [None]
         if attn_mask is not None and attn_mask.dtype != x.dtype:
-            raise ValueError('Attention mask must be float32')
+            raise ValueError('Attention mask must be %s' % x.dtype)
         if key_padding_mask is not None and key_padding_mask.dtype != x.dtype:
-            raise ValueError('Key padding mask must be float32')
+            raise ValueError('Key padding mask must be %s' % x.dtype)
         x = Softmax.sparse_softmax(x, scale, key_padding_mask, attn_mask, 
                                   key_padding_mask_mode, attn_mask_mode,
                                   self.spdims, self.block,
