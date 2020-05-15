@@ -454,17 +454,19 @@ def test_permute(N, C, H, W, in_order, out_order):
 ## fused-conv2d ##
 ##################
 
-def run_fused_conv2d_reference(x, w, biasa, biasb, dy, pad, stride, layout, block, mode, do_bench = True):
+def run_fused_conv2d_reference(x, w, biasa, biasb, dy, pad, stride, layout, block, do_bench = True):
   # create conv2d
   C, K, R, S = x.shape[1], dy.shape[1], layout.shape[2], layout.shape[3]
   conv2d = torch.nn.Conv2d(w.shape[1], w.shape[0], (R, S), padding=pad, stride=stride, bias=False).cuda().type(w.dtype)
   relu = torch.nn.ReLU(inplace=True)
   conv2d.weight.data.copy_(mask_weights(w, layout, block))
   # run conv2d
-  if mode == 'FIXUP_A':
-    y = conv2d(relu(x + biasa) + biasb)
-  else:
-    y = conv2d(x)
+  u = x
+  if biasa is not None:
+    u = relu(x + biasa)
+  if biasb is not None:
+    u = u + biasb
+  y = conv2d(u)
   # backward
   y.backward(dy)
   dx = x.grad.clone()
@@ -483,7 +485,7 @@ def run_fused_conv2d_reference(x, w, biasa, biasb, dy, pad, stride, layout, bloc
   # done
   return y, dx, dw, dbiasa, dbiasb
 
-def run_fused_conv2d_triton(x, w, biasa, biasb, dy, pad, stride, layout, block, mode, order = 'CHWN', do_bench = True):
+def run_fused_conv2d_triton(x, w, biasa, biasb, dy, pad, stride, layout, block, order = 'CHWN', do_bench = True):
   # create conv2d
   N, C, H, W = x.shape
   _, _, R, S = layout.shape
@@ -492,7 +494,7 @@ def run_fused_conv2d_triton(x, w, biasa, biasb, dy, pad, stride, layout, block, 
     x = x.permute(1,2,3,0).contiguous().permute(3,0,1,2)
     dy = dy.permute(1,2,3,0).contiguous().permute(3,0,1,2)
     x.retain_grad()
-  conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, mode=mode, order=order, bias=False).cuda().type(w.dtype)
+  conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda().type(w.dtype)
   conv2d.weight.data.copy_(compress_weights(w, layout, block))
   relu = torch.nn.ReLU(inplace=True)
   # run conv2d
@@ -514,7 +516,7 @@ def run_fused_conv2d_triton(x, w, biasa, biasb, dy, pad, stride, layout, block, 
   # done
   return y, dx, dw, dbiasa, dbiasb
 
-def test_fused_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, mode = 'FIXUP_A', order = 'CHWN', do_bench=True):
+def test_fused_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, do_biasa, do_biasb, order = 'CHWN', do_bench=True):
   dtype = torch.float32
   # probability distribution
   probs = torch.Tensor([rho, 1-rho])
@@ -529,21 +531,23 @@ def test_fused_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, mode = 'FIXU
   w = torch.randn((K, C, R, S), requires_grad=True, device=device, dtype=dtype)
   dy = torch.randn((N, K, P, Q), requires_grad=False, device=device, dtype=dtype)
   biasa, biasb = None, None
-  if mode == 'FIXUP_A':
+  if do_biasa:
     biasa = torch.randn((1,), requires_grad=True, device=x.device, dtype=x.dtype)
+  if do_biasb:
     biasb = torch.randn((1,), requires_grad=True, device=x.device, dtype=x.dtype)
   # execute
   ry, rdx, rdw, rdbiasa, rdbiasb = run_fused_conv2d_reference(x, w, biasa, biasb, dy, \
-                                                              pad, stride, layout, block, mode, do_bench=do_bench)
+                                                              pad, stride, layout, block, do_bench=do_bench)
   ty, tdx, tdw, tdbiasa, tdbiasb = run_fused_conv2d_triton(x, w, biasa, biasb, dy, \
-                                                           pad, stride, layout, block, mode, order, do_bench=do_bench)
+                                                           pad, stride, layout, block, order, do_bench=do_bench)
   rtol = {torch.float16: 1e-2,
           torch.float32: 1e-4}[dtype]
   assert relerr(ry, ty) < rtol
   assert relerr(rdx, tdx) < rtol
   assert relerr(rdw, tdw) < rtol
-  if mode == 'FIXUP_A':
+  if do_biasa:
     assert relerr(rdbiasa, tdbiasa) < rtol
+  if do_biasb:
     assert relerr(rdbiasb, tdbiasb) < rtol
   #return r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time
 
@@ -708,7 +712,7 @@ if __name__ == '__main__':
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
   test_fused_relu(32, 256, 15, 15)
-  test_fused_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, mode='STANDARD', order='CHWN') 
+  test_fused_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, False, False, order='CHWN') 
   #test_conv2d(256, 256, 16, 16, 256, 1, 1, (0, 0), (1, 1), 0.0, 32, 'NCHW') 
   #test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
   #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'NHWC') 
