@@ -8,7 +8,7 @@ src = '''
                         TYPE* B __readonly  __noalias __aligned(16),
                         TYPE* C __noalias __aligned(16),
                         TYPE* X __readonly __noalias __aligned(16),
-                        TYPE* dbias0, TYPE* dbias1,
+                        float* dbias0, float* dbias1,
                         TYPE bias0, TYPE bias1,
                         // shapes
                         int H, int W, int R, int S, int CC __multipleof(BLOCK),
@@ -480,8 +480,8 @@ class _sparse_conv2d(torch.autograd.Function):
     bias0 = bias0.item() if has_bias0 else 0
     bias1 = bias1.item() if has_bias1 else 0
     x = torch.empty((0,), device=a.device, dtype=a.dtype)
-    dbias0 = torch.empty((0,), device=a.device, dtype=a.dtype)
-    dbias1 = torch.empty((0,), device=a.device, dtype=a.dtype)
+    dbias0 = torch.empty((0,), device=a.device, dtype=torch.float32)
+    dbias1 = torch.empty((0,), device=a.device, dtype=torch.float32)
     kernel(a, b, c, x, dbias0, dbias1, bias0, bias1,
           H, W, R, S, C,
           Na, P, Q, K,
@@ -555,8 +555,8 @@ class _sparse_conv2d(torch.autograd.Function):
     bias0 = bias0.item() if has_bias0 else 0
     bias1 = bias1.item() if has_bias1 else 0
     if is_dx:
-      dbias0 = torch.zeros((1,), device=a.device, dtype=a.dtype)
-      dbias1 = torch.zeros((1,), device=a.device, dtype=a.dtype)
+      dbias0 = torch.zeros((1,), device=a.device, dtype=torch.float32)
+      dbias1 = torch.zeros((1,), device=a.device, dtype=torch.float32)
       for da_lut, da_num_locks, da_width, (a_pad_h, a_pad_w, off_bh, off_bw, off_ch, off_cw) in zip(lut, num_locks, width, da_offs):
         if da_width == 0:
           continue
@@ -581,12 +581,16 @@ class _sparse_conv2d(torch.autograd.Function):
                 bench = bench)
       if not has_bias0:
         dbias0 = None
+      else:
+        dbias0 = dbias0.type(a.dtype)
       if not has_bias1:
         dbias1 = None
+      else:
+        dbias1 = dbias1.type(a.dtype)
       return c, dbias0, dbias1
     else:
-      dbias0 = torch.empty((0,), device=a.device, dtype=a.dtype)
-      dbias1 = torch.empty((0,), device=a.device, dtype=a.dtype)
+      dbias0 = torch.empty((0,), device=a.device, dtype=torch.float32)
+      dbias1 = torch.empty((0,), device=a.device, dtype=torch.float32)
       stride_nc, stride_kc, stride_pc, stride_qc = c.stride()
       locks = _sparse_conv2d.get_locks(a.device, 2*width*num_locks*N*P*Q)
       kernel(a, b, c, x, dbias0, dbias1, bias0, bias1,
@@ -598,7 +602,6 @@ class _sparse_conv2d(torch.autograd.Function):
             lut, locks, num_locks, 
             grid = lambda opt: [width, triton.cdiv(N*P*Q, opt.d('TM'))], 
             bench = bench)
-
       return c
 
   
@@ -677,6 +680,9 @@ class _sparse_conv2d(torch.autograd.Function):
                                       ctx.num_blocks, ctx.layout, ctx.block,
                                       ctx.db_step, ctx.db_lut, ctx.db_num_locks, ctx.db_width,
                                       ctx.bench, ctx.db_time)
+    #print(da.nonzero().shape[0], db.nonzero().shape[0])
+    #print(da)
+    #print(db)
     return da, db, dbias0, dbias1,\
            None, None, None, None,\
            None, None, None, None,\
@@ -801,6 +807,10 @@ class Conv2d(torch.nn.Module):
         fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
         bound = 1 / math.sqrt(fan_in)
         init.uniform_(self.bias, -bound, bound)
+  
+  def fixup_init(self, num_layers):
+    K, R, S = self.out_channels, self.kernel_size[0], self.kernel_size[1]
+    torch.nn.init.normal_(self.weight, mean=0, std=np.sqrt(2 / (K*R*S)) * num_layers ** (-0.25))
 
   # def extra_repr(self):
   #   s = ''

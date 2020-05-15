@@ -24,7 +24,7 @@ void relu_y(TYPE *X, TYPE *Y, TYPE scale, TYPE bias, TYPE* RES, int N) {
 
   bwd_src = """
 void relu_dxdsdbdres(TYPE *X, TYPE *Y, TYPE scale,
-                     TYPE *DX, TYPE *DY, TYPE* dscale, TYPE* dbias, TYPE* DRES, 
+                     TYPE *DX, TYPE *DY, float* dscale, float* dbias, TYPE* DRES, 
                      int N) {
   int    off[TN]  = get_program_id(0)*TN + 0 ... TN;
   // pointers
@@ -57,7 +57,7 @@ void relu_dxdsdbdres(TYPE *X, TYPE *Y, TYPE scale,
       _relu.fwd_kernel = triton.kernel(_relu.fwd_src, defines=defines, num_warps=[4])
     kernel = _relu.fwd_kernel
     # launch kernel
-    y = torch.empty_like(x)
+    y = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
     N = x.numel()
     grid = lambda opt: [triton.cdiv(N, opt.d('TN'))]
     kernel(x, y, scale.item(), bias.item(),res, N, grid=grid)
@@ -76,15 +76,15 @@ void relu_dxdsdbdres(TYPE *X, TYPE *Y, TYPE scale,
       _relu.bwd_kernel = triton.kernel(_relu.bwd_src, defines=defines, num_warps=[4])
     kernel = _relu.bwd_kernel
     # allocate output
-    dx = torch.empty_like(dy)
-    dres = torch.empty_like(dy)
-    dscale = torch.empty((1,), device=dy.device, dtype=dy.dtype)
+    dx = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
+    dres = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
+    dscale = torch.empty((1,), device=dy.device, dtype=torch.float32)
     dbias = torch.empty_like(dscale)
     # launch kernel
     N = x.numel()
     grid = lambda opt: [triton.cdiv(N, opt.d('TN'))]
     kernel(x, y, ctx.scale.item(), dx, dy, dscale, dbias, dres, N, grid=grid)
-    return dx, dscale, dbias, dres
+    return dx, dscale.type(x.dtype), dbias.type(x.dtype), dres
 
 relu = _relu.apply
 
