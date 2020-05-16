@@ -221,13 +221,13 @@ src = '''
 #endif
     TYPE c[TM, TN] = acc;
 #ifdef HAS_BIAS1_DX
-    f32_atomic_add(dbias1, ((TYPE[TM*TN])c)[+]);
+    f32_atomic_add(dbias1, ((float[TM*TN])c)[+]);
 #endif
 #ifdef HAS_BIAS0_DX
     TYPE* px[TM, TN] = X + offc;
     TYPE   x[TM, TN] = *px;
     c = (x + bias0 > 0) ? c : 0;
-    f32_atomic_add(dbias0, ((TYPE[TM*TN])c)[+]);
+    f32_atomic_add(dbias0, ((float[TM*TN])c)[+]);
 #endif
     // write-back directly
     if(lockid == 0) {
@@ -494,8 +494,8 @@ class _sparse_conv2d(torch.autograd.Function):
     bias0 = bias0.item() if has_bias0 else 0
     bias1 = bias1.item() if has_bias1 else 0
     x = torch.empty((0,), device=a.device, dtype=a.dtype)
-    dbias0 = torch.empty((0,), device=a.device, dtype=torch.float32)
-    dbias1 = torch.empty((0,), device=a.device, dtype=torch.float32)
+    dbias0 = torch.zeros((0,), device=a.device, dtype=torch.float32)
+    dbias1 = torch.zeros((0,), device=a.device, dtype=torch.float32)
     #print('STRIDES/SHAPES', a.stride(), b.stride(), c.stride(), a.shape, b.shape, c.shape)
     kernel(a, b, c, x, dbias0, dbias1, bias0, bias1,
           H, W, R, S, C,
@@ -606,8 +606,8 @@ class _sparse_conv2d(torch.autograd.Function):
         dbias1 = dbias1.type(a.dtype)
       return c, dbias0, dbias1
     else:
-      dbias0 = torch.empty((0,), device=a.device, dtype=torch.float32)
-      dbias1 = torch.empty((0,), device=a.device, dtype=torch.float32)
+      dbias0 = torch.zeros((0,), device=a.device, dtype=torch.float32)
+      dbias1 = torch.zeros((0,), device=a.device, dtype=torch.float32)
       stride_nc, stride_kc, stride_pc, stride_qc = c.stride()
       locks = _sparse_conv2d.get_locks(a.device, 2*width*num_locks*N*P*Q)
       kernel(a, b, c, x, dbias0, dbias1, bias0, bias1,

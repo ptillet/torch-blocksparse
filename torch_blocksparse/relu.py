@@ -48,8 +48,8 @@ void relu_dxdsdbdres(TYPE *X __readonly  __noalias __aligned(16),
   // write-back
   *?(check)pdx    = du * scale;
   *?(check)pdres  = du;
-  f32_atomic_add(dbias, du[+]);
-  f32_atomic_add(dscale, (du*x)[+]);
+  f32_atomic_add(dbias, ((float[TN])du)[+]);
+  f32_atomic_add(dscale, ((float[TN])(du*x))[+]);
 }
 """
 
@@ -84,8 +84,8 @@ void relu_dxdsdbdres(TYPE *X __readonly  __noalias __aligned(16),
     # allocate output
     dx = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
     dres = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
-    dscale = torch.empty((1,), device=dy.device, dtype=torch.float32)
-    dbias = torch.empty_like(dscale)
+    dscale = torch.zeros((1,), device=dy.device, dtype=torch.float32)
+    dbias = torch.zero_like(dscale)
     # launch kernel
     N = x.numel()
     grid = lambda opt: [triton.cdiv(N, opt.d('TN'))]
