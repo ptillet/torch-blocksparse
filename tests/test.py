@@ -392,8 +392,8 @@ def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, do_biasa, do_biasb
   probs = torch.Tensor([rho, 1-rho])
   generator = torch.distributions.categorical.Categorical(probs)
   # initialize tensors
-  layout = torch.ones((K//block, C//block, R, S), dtype=torch.int64)
-  #layout.view(-1)[0] = 1
+  layout = generator.sample((K//block, C//block, R, S))
+  layout.view(-1)[0] = 1
   P = (H + 2*pad[0] - R)//stride[0] + 1
   Q = (W + 2*pad[1] - S)//stride[1] + 1
   device = 'cuda'
@@ -649,7 +649,7 @@ if __name__ == '__main__':
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
   test_relu(32, 256, 15, 15)
-  test_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, False, False, order='CHWN') 
+  test_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, True, True, order='CHWN') 
   #test_conv2d(256, 256, 16, 16, 256, 1, 1, (0, 0), (1, 1), 0.0, 32, 'NCHW') 
   #test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
   #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'NHWC') 

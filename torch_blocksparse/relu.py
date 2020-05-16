@@ -6,7 +6,10 @@ import math
 class _relu(torch.autograd.Function):
 
   fwd_src = """
-void relu_y(TYPE *X, TYPE *Y, TYPE scale, TYPE bias, TYPE* RES, int N) {
+void relu_y(TYPE *X __readonly  __noalias __aligned(16),  
+            TYPE *Y __writeonly  __noalias __aligned(16), 
+            TYPE scale, TYPE bias, 
+            TYPE* RES __readonly  __noalias __aligned(16), int N) {
   int    off[TN] = get_program_id(0)*TN + 0 ... TN;
   // pointers
   TYPE*   px[TN] = X + off;
@@ -23,8 +26,11 @@ void relu_y(TYPE *X, TYPE *Y, TYPE scale, TYPE bias, TYPE* RES, int N) {
 """
 
   bwd_src = """
-void relu_dxdsdbdres(TYPE *X, TYPE *Y, TYPE scale,
-                     TYPE *DX, TYPE *DY, float* dscale, float* dbias, TYPE* DRES, 
+void relu_dxdsdbdres(TYPE *X __readonly  __noalias __aligned(16), 
+                     TYPE *Y __readonly  __noalias __aligned(16), 
+                     TYPE scale,
+                     TYPE *DX __writeonly  __noalias __aligned(16), TYPE *DY, float* dscale, float* dbias, 
+                     TYPE* DRES __writeonly __noalias __aligned(16), 
                      int N) {
   int    off[TN]  = get_program_id(0)*TN + 0 ... TN;
   // pointers
@@ -53,8 +59,8 @@ void relu_dxdsdbdres(TYPE *X, TYPE *Y, TYPE scale,
   @staticmethod
   def forward(ctx, x, scale, bias, res):
     if _relu.fwd_kernel is None:
-      defines = {'TYPE': x.dtype, 'TN': [256]}
-      _relu.fwd_kernel = triton.kernel(_relu.fwd_src, defines=defines, num_warps=[4])
+      defines = {'TYPE': x.dtype, 'TN': [128, 256, 512]}
+      _relu.fwd_kernel = triton.kernel(_relu.fwd_src, defines=defines, num_warps=[2, 4, 8])
     kernel = _relu.fwd_kernel
     # launch kernel
     y = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
@@ -72,8 +78,8 @@ void relu_dxdsdbdres(TYPE *X, TYPE *Y, TYPE scale,
     x, y = ctx.saved_tensors
     # get kernel
     if _relu.bwd_kernel is None:
-      defines = {'TYPE': x.dtype, 'TN': [256]}
-      _relu.bwd_kernel = triton.kernel(_relu.bwd_src, defines=defines, num_warps=[4])
+      defines = {'TYPE': x.dtype, 'TN': [128, 256, 512]}
+      _relu.bwd_kernel = triton.kernel(_relu.bwd_src, defines=defines, num_warps=[2, 4, 8])
     kernel = _relu.bwd_kernel
     # allocate output
     dx = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)

@@ -12,19 +12,19 @@ src = '''
                         TYPE bias0, TYPE bias1,
                         // shapes
                         int H, int W, int R, int S, int CC __multipleof(BLOCK),
-                        int N __multipleof(32), int P, int Q, int K __multipleof(BLOCK),
+                        int N __multipleof(MULT), int P, int Q, int K __multipleof(BLOCK),
                         int pad_h, int pad_w,
                         int stride_h, int stride_w,
                         // a strides
-                        int stride_na __multipleof(BLOCK),
-                        int stride_ca __multipleof(BLOCK),
-                        int stride_ha __multipleof(BLOCK),
-                        int stride_wa __multipleof(BLOCK),
+                        int stride_na __multipleof(MULT),
+                        int stride_ca __multipleof(MULT),
+                        int stride_ha __multipleof(MULT),
+                        int stride_wa __multipleof(MULT),
                         // c strides
-                        int stride_nc __multipleof(BLOCK),
-                        int stride_kc __multipleof(BLOCK),
-                        int stride_hc __multipleof(BLOCK),
-                        int stride_wc __multipleof(BLOCK),
+                        int stride_nc __multipleof(MULT),
+                        int stride_kc __multipleof(MULT),
+                        int stride_hc __multipleof(MULT),
+                        int stride_wc __multipleof(MULT),
                         // lut and locks
                         int* lut, int* locks, int nlocks) {
      /* ---------------- */
@@ -434,6 +434,18 @@ class _sparse_conv2d(torch.autograd.Function):
   # OPERATORS              #
   ##########################
 
+  @staticmethod
+  def _get_mult(n):
+    if n % 16 == 0:
+      return 16
+    if n % 8 == 0:
+      return 8
+    if n % 4 == 0:
+      return 4
+    if n % 2 == 0:
+      return 2
+    return 1
+
   # Sparse = Dense x Dense
   @staticmethod
   def _sdd_conv2d(a, b, bias0, bias1,
@@ -449,6 +461,7 @@ class _sparse_conv2d(torch.autograd.Function):
     assert a_dtype == b_dtype
     assert Na == Nb
     c = torch.empty((num_blocks, block, block), dtype=a.dtype, device=a.device)
+    mult = _sparse_conv2d._get_mult(Na)
     # create kernel
     defines = {'NAME': 'sdd_conv2d', 
                'TYPE': a.dtype,
@@ -457,6 +470,7 @@ class _sparse_conv2d(torch.autograd.Function):
                'TN': block, 
                'BLOCK': block,
                'TZ': [1, 8, 16], 
+               'MULT': mult,
                'DW': True,
                'STRIDE_NA': 1 if order[-1] == 'N' else 'stride_na',
                'STRIDE_CA': 1 if order[-1] == 'C' else 'stride_ca',
@@ -471,7 +485,7 @@ class _sparse_conv2d(torch.autograd.Function):
     if has_bias1:
       defines['HAS_BIAS1'] = True
     cache = _sparse_conv2d.sdd_cache
-    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a_dtype, has_bias0, has_bias1), num_warps=[2, 4])
+    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a_dtype, has_bias0, has_bias1, mult), num_warps=[2, 4])
     # create semaphores
     locks = _sparse_conv2d.get_locks(a.device, 2*width*num_locks)
     # create output
@@ -482,6 +496,7 @@ class _sparse_conv2d(torch.autograd.Function):
     x = torch.empty((0,), device=a.device, dtype=a.dtype)
     dbias0 = torch.empty((0,), device=a.device, dtype=torch.float32)
     dbias1 = torch.empty((0,), device=a.device, dtype=torch.float32)
+    #print('STRIDES/SHAPES', a.stride(), b.stride(), c.stride(), a.shape, b.shape, c.shape)
     kernel(a, b, c, x, dbias0, dbias1, bias0, bias1,
           H, W, R, S, C,
           Na, P, Q, K,
@@ -520,12 +535,14 @@ class _sparse_conv2d(torch.autograd.Function):
     # create kernel
     has_bias0 = bias0 is not None
     has_bias1 = bias1 is not None
+    mult = _sparse_conv2d._get_mult(N)
     defines = {'NAME': 'dds_conv2d_' + ('_dx' if is_dx else '_y'), 
                'TYPE': a.dtype,
-               'TM': [128], 
+               'TM': [128, 256], 
                'TL': step, 
                'TN': block, 
                'BLOCK': block,
+               'MULT': mult,
                'STRIDE_BK': 1 if is_dx else block,
                'STRIDE_BC': block if is_dx else 1,
                'STRIDE_NA': 1 if order[-1] == 'N' else 'stride_na',
@@ -543,7 +560,7 @@ class _sparse_conv2d(torch.autograd.Function):
     if has_bias1:
       defines['HAS_BIAS1_DX' if is_dx else 'HAS_BIAS1'] = True
     cache = _sparse_conv2d.dds_cache
-    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a.dtype, is_dx, has_bias0, has_bias1), num_warps=[4])
+    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a.dtype, is_dx, has_bias0, has_bias1, mult), num_warps=[4])
     # create output
     if order == 'NHWC':
       c = torch.zeros(N, P, Q, K, dtype=a.dtype, device=a.device).permute(0,3,1,2)
