@@ -85,7 +85,7 @@ void relu_dxdsdbdres(TYPE *X __readonly  __noalias __aligned(16),
     dx = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
     dres = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
     dscale = torch.zeros((1,), device=dy.device, dtype=torch.float32)
-    dbias = torch.zero_like(dscale)
+    dbias = torch.zeros_like(dscale)
     # launch kernel
     N = x.numel()
     grid = lambda opt: [triton.cdiv(N, opt.d('TN'))]
