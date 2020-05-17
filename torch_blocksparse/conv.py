@@ -780,7 +780,7 @@ class Conv2d(torch.nn.Module):
   def clear_cache(self):
     self.lut_cache = dict()
 
-  def __call__(self, a):
+  def forward(self, a):
     N, Ca, H, W = a.shape
     K, Cb, R, S = self.out_channels, self.in_channels, self.kernel_size[0], self.kernel_size[1]
     P = (H + 2*self.padding[0] - R)//self.stride[0] + 1
