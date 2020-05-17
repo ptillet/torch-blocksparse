@@ -9,19 +9,19 @@ src = '''
                         TYPE* C __noalias __aligned(16),
                         // shapes
                         int H, int W, int R, int S, int CC __multipleof(BLOCK),
-                        int N __multipleof(32), int P, int Q, int K __multipleof(BLOCK),
+                        int N __multipleof(4), int P, int Q, int K __multipleof(BLOCK),
                         int pad_h, int pad_w,
                         int stride_h, int stride_w,
                         // a strides
-                        int stride_na __multipleof(BLOCK),
-                        int stride_ca __multipleof(BLOCK),
-                        int stride_ha __multipleof(BLOCK),
-                        int stride_wa __multipleof(BLOCK),
+                        int stride_na __multipleof(4),
+                        int stride_ca __multipleof(4),
+                        int stride_ha __multipleof(4),
+                        int stride_wa __multipleof(4),
                         // c strides
-                        int stride_nc __multipleof(BLOCK),
-                        int stride_kc __multipleof(BLOCK),
-                        int stride_hc __multipleof(BLOCK),
-                        int stride_wc __multipleof(BLOCK),
+                        int stride_nc __multipleof(4),
+                        int stride_kc __multipleof(4),
+                        int stride_hc __multipleof(4),
+                        int stride_wc __multipleof(4),
                         // lut and locks
                         int* lut, int* locks, int nlocks) {
      /* ---------------- */

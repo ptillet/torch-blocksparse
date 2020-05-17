@@ -22,8 +22,11 @@ void batchnorm_ymv(TYPE *Y, float *M, float *V,
 
   // compute mean
   float accm[TM] = 0;
-  for(int i = 0; i < N; i = i + TM)
-    accm = accm + *(px + i);
+  for(int i = 0; i < N; i = i + TM){
+    bool check[TM] = rm + i < N; 
+    float x[TM] = check ? *(px + i) : 0;
+    accm = accm + x;
+  }
   float mean = (float)accm[+] / N;
   *(M + c) = mean;
   *(RM + c) = (1 - mu)*run_mean + mu*mean;
@@ -31,7 +34,8 @@ void batchnorm_ymv(TYPE *Y, float *M, float *V,
   // compute variance
   float accv[TM] = 0;
   for(int i = 0; i < N; i = i + TM){
-    float x[TM] = *(px + i);
+    bool check[TM] = rm + i < N; 
+    float x[TM] = check ? *(px + i) : 0;
     x = x - mean;
     accv = accv + x*x;
   }
@@ -48,9 +52,10 @@ void batchnorm_ymv(TYPE *Y, float *M, float *V,
   float beta = *(B + c);
   float rstdg = 1 / sqrtf(var + eps) * gamma;
   for(int i = 0; i < N; i = i + TM){
-    float x[TM] = *(px + i);
+    bool check[TM] = rm + i < N; 
+    float x[TM] = check ? *(px + i) : 0;
     float y[TM] = (x - mean)*rstdg + beta;
-    *(py + i) = y;
+    *?(check)(py + i) = y;
   }
 }
 """
@@ -78,8 +83,9 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
   float  acc_dg[TM] = 0;
   float  acc_db[TM] = 0;
   for(int i = 0; i < N; i = i + TM){
-    float x[TM] = *(px + i);
-    float dy[TM] = *(pdy + i);
+    bool check[TM] = rx + i < N; 
+    float x[TM] = check ? *(px + i) : 0;
+    float dy[TM] = check ? *(pdy + i) : 0;
     acc_dg += dy*(x - mean)*rstd;
     acc_db += dy;
   }
@@ -90,12 +96,13 @@ void batchnorm_dxdgdb(TYPE *DX, float *DG, float *DB,
 
   // compute dx
   for(int i = 0; i < N; i = i + TM){
-    float x[TM] = *(px + i);
-    float dy[TM] = *(pdy + i);
+    bool check[TM] = rx + i < N; 
+    float x[TM] = check ? *(px + i) : 0;
+    float dy[TM] = check ? *(pdy + i) : 0;
     float xhat[TM] = (x - mean) * rstd;
     float xtmp[TM] = (xhat * dg + db) / N;
     float dx[TM] = (dy - xtmp) * rstd * gamma;
-    *(pdx + i) = dx;
+    *?(check)(pdx + i) = dx;
   }
 }
 """

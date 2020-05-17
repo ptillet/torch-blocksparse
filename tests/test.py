@@ -558,7 +558,7 @@ if __name__ == '__main__':
   #test_conv2d(256, 256, 16, 16, 256, 1, 1, (0, 0), (1, 1), 0.0, 32, 'NCHW') 
   #test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
   #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'NHWC') 
-  #test_batchnorm(256, 32, 15, 15, )
+  test_batchnorm(256, 32, 15, 15, )
   #for (N, C, H, W, K, R, S, pad, stride) in mobilenet_v2_shapes():
   #  print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
   #  r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time = test_conv2d(N, C, H, W, K, R, S, pad, stride, 0., 32, do_bench=False)
