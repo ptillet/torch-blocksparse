@@ -253,10 +253,10 @@ def compress_weights(w, layout, block):
           current += 1
   return blocks
 
-def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = True):
+def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = False):
   # create conv2d
   C, K, R, S = x.shape[1], dy.shape[1], layout.shape[2], layout.shape[3]
-  conv2d = torch.nn.Conv2d(w.shape[1], w.shape[0], (R, S), padding=pad, stride=stride, bias=False).cuda().type(w.dtype)
+  conv2d = torch.nn.Conv2d(C, K, (R, S), padding=pad, stride=stride, bias=False).cuda().type(w.dtype)
   conv2d.weight.data.copy_(mask_weights(w, layout, block))
   # run conv2d
   y = conv2d(x)
@@ -301,17 +301,12 @@ def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = True):
     ret[5] = (time() - dw_start) / repeat
   return tuple(ret)
 
-def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = True):
+def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = False):
   # create conv2d
   N, C, H, W = x.shape
-  _, _, R, S = layout.shape
-  K = dy.shape[1]
-  if order == 'CHWN':
-    x = x.permute(1,2,3,0).contiguous().permute(3,0,1,2)
-    dy = dy.permute(1,2,3,0).contiguous().permute(3,0,1,2)
-    x.retain_grad()
-  conv2d = torch_blocksparse.Conv2d(w.shape[1], w.shape[0], (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda().type(w.dtype)
-  conv2d.weight.data.copy_(compress_weights(w, layout, block))
+  K, R, S = dy.shape[1], layout.shape[2], layout.shape[3]
+  conv2d = torch_blocksparse.Conv2d(K, C, (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda().type(w.dtype)
+  conv2d.weight.data = w
   y = conv2d(x)
   # backward
   y.backward(dy)
@@ -353,36 +348,52 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Tr
     ret[5] = (time() - dw_start) / repeat
   return tuple(ret)
 
-def relerr(x, y):
-  x = x[x.abs() > 1e-5]
-  y = y[y.abs() > 1e-5]
+def relerr(x, y, eps=1e-6):
+  x = x.data.clone() + eps
+  y = y.data.clone() + eps
   if x.shape != y.shape:
     return 1
   diff  = x - y
   ewmax = torch.max(x.abs(), y.abs())
   return (diff.abs() / ewmax).max().item()
 
-def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do_bench=True):
+def mempad(x, shape, strides, pad_size=1024*1024):
+  pad = float('nan') * torch.ones(pad_size, device=x.device, dtype=x.dtype)
+  chunk = torch.cat((pad, x.flatten(), pad))
+  ret = chunk[pad_size:-pad_size].as_strided(shape, strides)
+  return ret
+
+def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do_bench=False):
   dtype = torch.float32
   # probability distribution
   probs = torch.Tensor([rho, 1-rho])
   generator = torch.distributions.categorical.Categorical(probs)
-  # initialize tensors
+  # creates layout for testing
   layout = generator.sample((K//block, C//block, R, S))
+  layout[:,1,:,:] = 0
+  layout[1,:,:,:] = 0
+  layout[:,:,0,0] = 0
   layout.view(-1)[0] = 1
-  P = (H + 2*pad[0] - R)//stride[0] + 1
-  Q = (W + 2*pad[1] - S)//stride[1] + 1
-  x = torch.rand((N, C, H, W), requires_grad=True).cuda().type(dtype)
-  w = torch.rand((K, C, R, S), requires_grad=True).cuda().type(dtype)
-  dy = torch.rand((N, K, P, Q)).cuda().type(dtype)
+  # initialize tensors
+  P  = (H + 2*pad[0] - R)//stride[0] + 1
+  Q  = (W + 2*pad[1] - S)//stride[1] + 1
+  x  = torch.rand(N*C*H*W, requires_grad=True).cuda().type(dtype)
+  rw = torch.rand((K, C, R, S), requires_grad=True).cuda().type(dtype)
+  tw = compress_weights(rw, layout, block)
+  dy = torch.rand(N*K*P*Q, requires_grad=True).cuda().type(dtype)
+  # pad memory for easier detection of out-of-bounds accesses
+  x  = mempad(x, (N, C, H, W), (1, N*W*H, N*W, N))
+  dy = mempad(dy, (N, K, P, Q), (1, N*Q*P, N*Q, N))
+  rw = mempad(rw, (K, C, R, S), (C*R*S, R*S, S, 1))
+  tw = mempad(tw, tw.shape, tw.stride())
+  # retain gradients
   x.retain_grad()
+  rw.retain_grad()
   # execute
-  ry, rdx, rdw, r_y_time, r_dx_time, r_dw_time = run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench=do_bench)
-  ty, tdx, tdw, t_y_time, t_dx_time, t_dw_time = run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench=do_bench)
+  ry, rdx, rdw, r_y_time, r_dx_time, r_dw_time = run_conv2d_reference(x, rw, dy, pad, stride, layout, block, do_bench=do_bench)
+  ty, tdx, tdw, t_y_time, t_dx_time, t_dw_time = run_conv2d_triton(x, tw, dy, pad, stride, layout, block, order, do_bench=do_bench)
   rtol = {torch.float16: 1e-2,
           torch.float32: 1e-4}[dtype]
-  #print(ry)
-  #print(ty)
   assert relerr(ry, ty) < rtol
   assert relerr(rdx, tdx) < rtol
   assert relerr(rdw, tdw) < rtol
@@ -554,11 +565,11 @@ if __name__ == '__main__':
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
   #   test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
-  test_conv2d(32, 256, 15, 15, 256, 3, 3, (0, 0), (1, 1), 0.0, 32, 'CHWN') 
+  test_conv2d(256, 32, 8, 8, 32, 3, 3, (1, 1), (2, 2), 0.5, 16, 'CHWN') 
   #test_conv2d(256, 256, 16, 16, 256, 1, 1, (0, 0), (1, 1), 0.0, 32, 'NCHW') 
   #test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
   #test_conv2d(256, 256, 15, 15, 256, 1, 1, (0, 0), (1, 1), 0.70, 32, 'NHWC') 
-  test_batchnorm(256, 32, 15, 15, )
+  #test_batchnorm(256, 32, 15, 15)
   #for (N, C, H, W, K, R, S, pad, stride) in mobilenet_v2_shapes():
   #  print(f'Testing: {N:3d}, {C:3d}, {H:3d}, {W:3d}, {K:3d}, {R}, {S}, {pad}, {stride}... ', end='')
   #  r_y_time, t_y_time, r_dx_time, t_dx_time, r_dw_time, t_dw_time = test_conv2d(N, C, H, W, K, R, S, pad, stride, 0., 32, do_bench=False)
