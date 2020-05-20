@@ -2,41 +2,34 @@
 
 Block-sparse operations for PyTorch
 
-## Current State
+# Supported Operations
 
-The following functions are supported:
+The following features are supported:
 ```
-Matrix Multiplication: SPARSE = op(DENSE) x op(DENSE)
-Matrix Multiplication: DENSE = op(SPARSE) x op(DENSE)
-Matrix Multiplication: DENSE = op(DENSE) x op(SPARSE)
-Softmax: Sparse = Softmax(Sparse)
+Convolutions with block-sparse weights:  Layout has format [K//block, C//block, R, S]. Padding/Stride supported.
+Sparse MultiHead Attention (https://arxiv.org/abs/1904.10509)
+Batched Matrix Multiplication: SPARSE = op(DENSE) x op(DENSE)
+Batched Matrix Multiplication: DENSE = op(SPARSE) x op(DENSE)
+Batched Matrix Multiplication: DENSE = op(DENSE) x op(SPARSE)
+Softmax: SPARSE = Softmax(SPARSE)
 ```
 where `op()` is identity or transposition.
-
-The following modules are supported:
-```
-Sparse MultiHead Attention (https://arxiv.org/abs/1904.10509)
-Linear
-Block-Sparse Convolutions
-```
 
 Inputs are FP32 or FP16 (with tensor cores).
 
 ## Installation
-
-Torch-Blocksparse depends on CUDA 10.1 and the [Triton](https://github.com/ptillet/triton) language and compiler:
+Torch-Blocksparse depends on CUDA 10.1 and the [Triton](https://github.com/ptillet/triton) language and compiler, which requires llvm-{8,9}.
 ```
-sudo apt-get install llvm-8-dev;
+sudo apt-get install llvm-{8,9}-dev # Ubuntu
+```
+You can then install the latest stable version from pip
+```
+pip install torch-blocksparse
+```
+Or the latest development version from source
+```
 python setup.py install;
 ```
-
-And run the tests:
-```
-cd tests;
-python test.py
-```
-The first run will take some time as all the necessary CUDA code will be JIT-compiled and cached in `$HOME/.triton/cache`.
-
 
 ## Usage
 
