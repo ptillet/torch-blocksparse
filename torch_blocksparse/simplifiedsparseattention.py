@@ -87,9 +87,13 @@ class SimplifiedSparseAttention(nn.Module):
             raise NotImplementedError('only self-attention is supported for now')
         # cache look-up table computations etc
         sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax = self.get_ops(query.shape[2])
-       # attention scores
+
+        bsz, num_heads, tgt_len, head_dim = query.size()
+        scaling = float(head_dim) ** -0.5
+
+        # attention scores
         attn_output_weights = sparse_dot_sdd_nt(query, key)
-        attn_output_weights = sparse_softmax(attn_output_weights, key_padding_mask=key_padding_mask, attn_mask=attn_mask,
+        attn_output_weights = sparse_softmax(attn_output_weights, scale=scaling, key_padding_mask=key_padding_mask, attn_mask=attn_mask,
                 key_padding_mask_mode=self.key_padding_mask_mode, attn_mask_mode=self.attn_mask_mode)
         # outputs
         attn_output = sparse_dot_dsd_nn(attn_output_weights, value)
