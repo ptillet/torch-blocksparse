@@ -305,7 +305,8 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Fa
   # create conv2d
   N, C, H, W = x.shape
   K, R, S = dy.shape[1], layout.shape[2], layout.shape[3]
-  conv2d = torch_blocksparse.Conv2d(K, C, (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda().type(w.dtype)
+  conv2d = torch_blocksparse.Conv2d(K, C, (R, S), layout, block, padding=pad, stride=stride, order=order, bias=False).cuda()
+  conv2d.weight.type(w.dtype)
   conv2d.weight.data = w
   y = conv2d(x)
   # backward
@@ -382,7 +383,7 @@ def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do
   tw = compress_weights(rw, layout, block)
   dy = torch.rand(N*K*P*Q, requires_grad=True).cuda().type(dtype)
   # pad memory for easier detection of out-of-bounds accesses
-  x  = mempad(x, (N, C, H, W), (1, N*W*H, N*W, N))
+  x  = mempad(x,  (N, C, H, W), (1, N*W*H, N*W, N))
   dy = mempad(dy, (N, K, P, Q), (1, N*Q*P, N*Q, N))
   rw = mempad(rw, (K, C, R, S), (C*R*S, R*S, S, 1))
   tw = mempad(tw, tw.shape, tw.stride())

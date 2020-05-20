@@ -239,6 +239,10 @@ class _sparse_conv2d(torch.autograd.Function):
 
   @staticmethod
   def make_dds_lut(layout, block, step, is_dx, strides, full_layout, off_bh, off_bw, stride_bh, stride_bw):
+    assert layout.dtype == torch.int64
+    layout = layout.data.cpu()
+    if full_layout is not None:
+      full_layout = full_layout.cpu().long()
     headers  = torch.empty((0,), dtype=torch.int64)
     a_deltas = torch.empty((0,), dtype=torch.int64)
     b_deltas = torch.empty((0,), dtype=torch.int64) 
@@ -348,6 +352,7 @@ class _sparse_conv2d(torch.autograd.Function):
   
   @staticmethod
   def make_sdd_lut(layout, block):
+    layout = layout.data.long()
     nnz = layout.permute(0, 2, 3, 1).contiguous().nonzero()
     width = layout.sum()
     # create lut
@@ -411,14 +416,14 @@ class _sparse_conv2d(torch.autograd.Function):
   # Sparse = Dense x Dense
   @staticmethod
   def _sdd_conv2d(a, b, order, pad_h, pad_w, stride_h, stride_w,
-                  num_blocks, layout, block, step, lut, num_locks, width, 
+                  num_blocks, kernel_size, block, step, lut, num_locks, width, 
                   bench, time):
     # sanity checks
     a_dtype = a.dtype
     b_dtype = b.dtype
     Na, C, H, W = a.shape
     Nb, K, P, Q = b.shape
-    _, _, R, S = layout.shape
+    R, S = kernel_size
     assert a_dtype == b_dtype
     assert Na == Nb
     c = torch.empty((num_blocks, block, block), dtype=a.dtype, device=a.device)
@@ -469,7 +474,7 @@ class _sparse_conv2d(torch.autograd.Function):
   @staticmethod
   def _dds_conv2d(a, b, order, nchwkrspq,
                   pad_h, pad_w, stride_h, stride_w,
-                  is_dx, layout, block, 
+                  is_dx, block, 
                   step, lut, num_locks, width, da_offs,
                   bench, time):
     N, C, H, W, K, R, S, P, Q = nchwkrspq
@@ -548,7 +553,7 @@ class _sparse_conv2d(torch.autograd.Function):
   @staticmethod
   def forward(ctx, a, b, 
               order, nchwkrspq, pad_h, pad_w, stride_h, stride_w, 
-              num_blocks, layout, block,
+              num_blocks, kernel_size, block,
               c_step, c_lut,  c_num_locks,  c_width,
               da_step, da_lut, da_num_locks, da_width, da_offs,
               db_step, db_lut, db_num_locks, db_width,
@@ -562,7 +567,7 @@ class _sparse_conv2d(torch.autograd.Function):
     # return torch.empty(N, K, P, Q, dtype=a.dtype, device=a.device).contiguous(memory_format=torch.channels_last)
     c = _sparse_conv2d._dds_conv2d(a, b, order,
                                    nchwkrspq, pad_h, pad_w, stride_h, stride_w,
-                                   False, layout, block, 
+                                   False, block, 
                                    c_step, c_lut, c_num_locks, c_width, None,
                                    bench, c_time)
     # save for backward
@@ -584,7 +589,7 @@ class _sparse_conv2d(torch.autograd.Function):
     ctx.nchwkrspq = nchwkrspq
     ctx.bench = bench
     ctx.block = block
-    ctx.layout = layout
+    ctx.kernel_size = kernel_size
     ctx.pad_h = pad_h
     ctx.pad_w = pad_w
     ctx.stride_h = stride_h
@@ -608,14 +613,14 @@ class _sparse_conv2d(torch.autograd.Function):
     da = None
     if ctx.needs_input_grad[0]:
       da = _sparse_conv2d._dds_conv2d(dc, b, ctx.order, ctx.nchwkrspq, ctx.pad_h, ctx.pad_w, ctx.stride_h, ctx.stride_w,
-                       True, ctx.layout, ctx.block, 
+                       True, ctx.block, 
                        ctx.da_step, ctx.da_lut, ctx.da_num_locks, ctx.da_width, ctx.da_offs,
                        ctx.bench, ctx.da_time)
     # gradients w.r.t. b
     db = None
     if ctx.needs_input_grad[1]:
       db = _sparse_conv2d._sdd_conv2d(a, dc, ctx.order, ctx.pad_h, ctx.pad_w, ctx.stride_h, ctx.stride_w,
-                                      ctx.num_blocks, ctx.layout, ctx.block,
+                                      ctx.num_blocks, ctx.kernel_size, ctx.block,
                                       ctx.db_step, ctx.db_lut, ctx.db_num_locks, ctx.db_width,
                                       ctx.bench, ctx.db_time)
     return da, db, None, None, None,\
@@ -723,14 +728,15 @@ class Conv2d(torch.nn.Module):
     super(Conv2d, self).__init__()
     assert bias == False
     self.lut_cache = dict()
-    self.layout = layout
     self.block = block
     self.in_channels = in_channels
     self.out_channels = out_channels
     self.kernel_size = kernel_size
     self.stride = stride
     self.padding = padding
+    self.layout = torch.nn.Parameter(layout, requires_grad=False)
     self.weight = torch.nn.Parameter(torch.Tensor(layout.sum(), block, block), requires_grad=True)
+    self.num_blocks = layout.sum()
     self.bias = None
     self.order = order
     self.reset_parameters()
@@ -797,7 +803,7 @@ class Conv2d(torch.nn.Module):
     # run kernel
     c = Conv2d.sparse_conv2d(a, self.weight, self.order, nchwkrspq, 
                              self.padding[0], self.padding[1], self.stride[0], self.stride[1],
-                             self.layout.sum(), self.layout.data, self.block,
+                             self.num_blocks, self.kernel_size, self.block,
                              c_step, c_lut, c_num_locks, c_width,
                              da_step, da_lut, da_num_locks, da_width, da_offs,
                              db_step, db_lut, db_num_locks, db_width,
