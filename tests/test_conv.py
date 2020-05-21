@@ -2,6 +2,7 @@ import torch
 import torch_blocksparse
 from time import time
 from utils import *
+import unittest
 
 torch.manual_seed(0)
 torch.backends.cudnn.benchmark = False
@@ -55,8 +56,7 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Fa
   return y, dx, dw
 
 
-def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do_bench=False):
-  dtype = torch.float32
+def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, dtype, order = 'CHWN', do_bench=False):
   # probability distribution
   probs = torch.Tensor([rho, 1-rho])
   generator = torch.distributions.categorical.Categorical(probs)
@@ -84,16 +84,28 @@ def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, order = 'CHWN', do
   # execute
   ry, rdx, rdw = run_conv2d_reference(x, rw, dy, pad, stride, layout, block, do_bench=do_bench)
   ty, tdx, tdw = run_conv2d_triton(x, tw, dy, pad, stride, layout, block, order, do_bench=do_bench)
-  rtol = {torch.float16: 1e-2,
-          torch.float32: 1e-4}[dtype]
-  assert relerr(ry, ty) < rtol
-  assert relerr(rdx, tdx) < rtol
-  assert relerr(rdw, tdw) < rtol
+  # allclose ?
+  ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
+  ac_dx = torch.allclose(rdx, tdx, rtol=1e-4, atol=1e-5)
+  ac_dw = torch.allclose(rdw, tdw, rtol=1e-4, atol=1e-5)
+  return ac_y, ac_dx, ac_dw
 
+
+
+class TestConv2d(unittest.TestCase):
+
+  def test_full_fp32(self):
+    dtype = torch.float32
+    ac_y, ac_dx, ac_dw = test_conv2d(36, 32, 27, 27, 64, 3, 3,
+                                    (1, 1), (2, 2), 0.5, 16, dtype, 'CHWN') 
+    self.assertTrue(ac_y)
+    self.assertTrue(ac_dx)
+    self.assertTrue(ac_dw)
+    
 
 #############
 # Run tests #
 #############
 
 if __name__ == '__main__':
-  test_conv2d(36, 32, 27, 27, 64, 3, 3, (1, 1), (2, 2), 0.5, 16, 'CHWN') 
+  unittest.main()

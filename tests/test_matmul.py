@@ -2,6 +2,7 @@ import torch
 import torch_blocksparse
 from time import time
 from utils import *
+import unittest
 
 # run reference implementation
 def run_mm_reference(x, w, mode, trans_a, trans_b, layout, block, dy):
@@ -97,7 +98,7 @@ def bench_mm_openai(x, w, mode, trans_a, trans_b, layout, block, num_repeat):
   result = sess.run([y], feed_dict = {vx: x, vw: w})
   sess.close()
 
-def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block):
+def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   torch.manual_seed(1)
   AS0 = K if trans_a else M
   AS1 = M if trans_a else K
@@ -119,21 +120,39 @@ def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block):
   # run
   ry, rdx, rdw = run_mm_reference(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   ty, tdx, tdw = run_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
+  ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
+  ac_dx = torch.allclose(rdx, tdx, rtol=1e-4, atol=1e-5)
+  ac_dw = torch.allclose(rdw, tdw, rtol=1e-4, atol=1e-5)
+  return ac_y, ac_dx, ac_dw
   # test
-  idx = (tdx - rdx).abs() > 1
-  assert(torch.allclose(ty, ry))
-  assert(torch.allclose(tdx, rdx))
-  assert(torch.allclose(tdw, rdw))
-  # benchmark
-  num_repeat = 100
-  triton_ts = bench_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, num_repeat)
-  #openai_ts = bench_mm_openai(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, num_repeat)
-  #flops = 2 * M * bsz * bsz * layout.sum()
-  print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
+#   idx = (tdx - rdx).abs() > 1
+#   assert(torch.allclose(ty, ry))
+#   assert(torch.allclose(tdx, rdx))
+#   assert(torch.allclose(tdw, rdw))
+#   # benchmark
+#   num_repeat = 100
+#   triton_ts = bench_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, num_repeat)
+#   #openai_ts = bench_mm_openai(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, num_repeat)
+#   #flops = 2 * M * bsz * bsz * layout.sum()
+#   print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
+
+
+class TestMatMul(unittest.TestCase):
+
+  def test_full_fp32(self):
+    dtype = torch.float32
+    ac_y, ac_dx, ac_dw = test_mm(3, 2, 256, 512, 384, 0.5, 'sdd', 
+                                False, False, 32, torch.float32)
+    self.assertTrue(ac_y)
+    self.assertTrue(ac_dx)
+    self.assertTrue(ac_dw)
+ 
+#if __name__ == '__main__':
+#  for mode in ['sdd', 'dsd', 'dds']:
+#    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
+#    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
+#    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
+#    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
 
 if __name__ == '__main__':
-  for mode in ['sdd', 'dsd', 'dds']:
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
-    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
+    unittest.main()

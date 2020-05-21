@@ -2,7 +2,7 @@ import torch
 import torch_blocksparse
 from time import time
 from utils import *
-
+import unittest
 
 def run_softmax_triton(x, scale, dx, kp_mask, attn_mask, layout, block):
   sparse_softmax = torch_blocksparse.Softmax(layout, block, bench=False)
@@ -52,15 +52,21 @@ def test_softmax(Z, H, M, N, scale, rho, block):
   # execute
   ry, rdx = run_softmax_reference(x, scale, dx, kp_mask, bool_attn_mask, layout, block)
   ty, tdx = run_softmax_triton(x, scale, dx, kp_mask, fp_attn_mask, layout, block)
-  ry = ry[ry == ry]
-  ty = ty[ty == ty]
-  rdx = rdx[(rdx == rdx) & (rdx != 0)]
-  tdx = tdx[(tdx == tdx) & (tdx != 0)]
-  assert(torch.allclose(ry, ty))
-  assert(torch.allclose(rdx, tdx))
+  ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
+  ac_dx = torch.allclose(rdx, tdx, rtol=1e-4, atol=1e-5)
+  return ac_y, ac_dx
   # benchmark
-  triton_ts = bench_softmax_triton(x, scale, kp_mask, fp_attn_mask, layout, block) 
-  print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
+  #triton_ts = bench_softmax_triton(x, scale, kp_mask, fp_attn_mask, layout, block) 
+  #print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
+
+class TestSoftmax(unittest.TestCase):
+
+  def test_full_fp32(self):
+    dtype = torch.float32
+    ac_y, ac_dx = test_softmax(1, 12, 128, 128, 0.5, 0.4, 16)
+    self.assertTrue(ac_y)
+    self.assertTrue(ac_dx)
+    
 
 if __name__ == '__main__':
-  test_softmax(1, 12, 128, 128, 0.5, 0.4, 16)
+  unittest.main()
