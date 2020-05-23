@@ -12,5 +12,7 @@ setuptools.setup(
     install_requires = ['triton', 'torch'],
     packages         = ['torch_blocksparse'],
     url              = 'https://github.com/ptillet/torch-blocksparse',
+    test_suite       = 'nose.collector',
+    tests_require    = ['nose', 'parameterized'],
     license          = 'MIT'
 )

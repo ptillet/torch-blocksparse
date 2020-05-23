@@ -3,11 +3,11 @@ import torch_blocksparse
 from time import time
 from collections import OrderedDict
 from utils import *
-import unittest
+from nose.tools import nottest
+from parameterized import parameterized
 
-
-def test_permute(N, C, H, W, in_order, out_order):
-  dtype = torch.float32
+@nottest
+def run_test_permute(N, C, H, W, in_order, out_order, dtype):
   shape  = (N, C, H, W)
   stride_x = torch_blocksparse._permute.strides(N, C, H, W, in_order)
   stride_y = torch_blocksparse._permute.strides(N, C, H, W, out_order)
@@ -18,12 +18,6 @@ def test_permute(N, C, H, W, in_order, out_order):
   ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
   return ac_y
 
-class TestPermute(unittest.TestCase):
-
-  def test_full_fp32(self):
-    dtype = torch.float32
-    ac_y = test_permute(32, 32, 4, 4, 'NCHW', 'CHWN')
-    self.assertTrue(ac_y)
-
-if __name__ == '__main__':
-  unittest.main()
+def test_full_fp32():
+  ac_y = run_test_permute(32, 32, 4, 4, 'NCHW', 'CHWN', torch.float32)
+  assert ac_y

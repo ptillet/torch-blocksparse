@@ -2,9 +2,11 @@ import torch
 import torch_blocksparse
 from time import time
 from utils import *
-import unittest
+from nose.tools import nottest
+from parameterized import parameterized
 
 # run reference implementation
+@nottest
 def run_mm_reference(x, w, mode, trans_a, trans_b, layout, block, dy):
   x = sparse_to_dense(x, layout, block) if mode == 'dsd' else x
   w = sparse_to_dense(w, layout, block) if mode == 'dds' else w
@@ -40,6 +42,7 @@ def run_mm_triton(x, w, mode, trans_a, trans_b, layout, block, dy):
   return y, dx, dw
 
 # benchmark triton implementation
+@nottest
 def bench_mm_triton(x, w, mode, trans_a, trans_b, layout, block, num_repeat):
   from time import time
   x = dense_to_sparse(x, layout, block) if mode == 'dsd' else x
@@ -52,6 +55,7 @@ def bench_mm_triton(x, w, mode, trans_a, trans_b, layout, block, num_repeat):
   torch.cuda.synchronize()
   return op.time_c*1e-9
   
+@nottest
 def bench_mm_openai(x, w, mode, trans_a, trans_b, layout, block, num_repeat):
   # import and disable all logging
   import os
@@ -98,7 +102,8 @@ def bench_mm_openai(x, w, mode, trans_a, trans_b, layout, block, num_repeat):
   result = sess.run([y], feed_dict = {vx: x, vw: w})
   sess.close()
 
-def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
+@nottest
+def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   torch.manual_seed(1)
   AS0 = K if trans_a else M
   AS1 = M if trans_a else K
@@ -136,23 +141,25 @@ def test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
 #   #flops = 2 * M * bsz * bsz * layout.sum()
 #   print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
 
-
-class TestMatMul(unittest.TestCase):
-
-  def test_full_fp32(self):
-    dtype = torch.float32
-    ac_y, ac_dx, ac_dw = test_mm(3, 2, 256, 512, 384, 0.5, 'sdd', 
-                                False, False, 32, torch.float32)
-    self.assertTrue(ac_y)
-    self.assertTrue(ac_dx)
-    self.assertTrue(ac_dw)
- 
-#if __name__ == '__main__':
-#  for mode in ['sdd', 'dsd', 'dds']:
-#    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, False, 32)
-#    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, False, 32)
-#    test_mm(3, 2, 256, 512, 384, 0.5, mode, False, True, 32)
-#    test_mm(3, 2, 256, 512, 384, 0.5, mode, True, True, 32)
-
-if __name__ == '__main__':
-    unittest.main()
+@parameterized(
+    [
+    ('sdd', False, False),
+    ('sdd', False, True),
+    ('sdd', True, False),
+    ('sdd', True, True),
+    ('dsd', False, False),
+    ('dsd', False, True),
+    ('dsd', True, False),
+    ('dsd', True, True),
+    ('dds', False, False),
+    ('dds', False, True),
+    ('dds', True, False),
+    ('dds', True, True),
+    ]
+)
+def test_full_fp32(mode, at, bt):
+  ac_y, ac_dx, ac_dw = run_test_mm(3, 2, 256, 512, 384, 0.5, mode, 
+                                  at, bt, 32, torch.float32)
+  assert ac_y
+  assert ac_dx
+  assert ac_dw

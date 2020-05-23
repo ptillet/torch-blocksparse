@@ -3,10 +3,13 @@ import torch_blocksparse
 from time import time
 from utils import *
 import unittest
+from nose.tools import nottest
+from parameterized import parameterized
 
 torch.manual_seed(0)
 torch.backends.cudnn.benchmark = False
 
+@nottest
 def bench_conv2d_reference(x, w, dy, pad, stride, layout, block, repeat=10):
   # dry run
   y = conv2d(x)
@@ -23,6 +26,7 @@ def bench_conv2d_reference(x, w, dy, pad, stride, layout, block, repeat=10):
   time_dw = bench(lambda: y.backward(dy, retain_graph=True))
   return time_y, time_dx, time_dw
 
+@nottest
 def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = False):
   # create conv2d
   C, K, R, S = x.shape[1], dy.shape[1], layout.shape[2], layout.shape[3]
@@ -39,6 +43,7 @@ def run_conv2d_reference(x, w, dy, pad, stride, layout, block, do_bench = False)
   conv2d.weight.grad.zero_()
   return y, dx, dw
 
+@nottest
 def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = False):
   # create conv2d
   N, C, H, W = x.shape
@@ -55,8 +60,8 @@ def run_conv2d_triton(x, w, dy, pad, stride, layout, block, order, do_bench = Fa
   conv2d.weight.grad.zero_()
   return y, dx, dw
 
-
-def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, dtype, order = 'CHWN', do_bench=False):
+@nottest
+def run_test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, dtype, order = 'CHWN', do_bench=False):
   # probability distribution
   probs = torch.Tensor([rho, 1-rho])
   generator = torch.distributions.categorical.Categorical(probs)
@@ -91,21 +96,20 @@ def test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, dtype, order = 'CH
   return ac_y, ac_dx, ac_dw
 
 
+def test_full_fp16():
+  # pass when no tensor cores
+  try:
+    ac_y, ac_dx, ac_dw = run_test_conv2d(36, 32, 27, 27, 64, 3, 3,
+                                        (1, 1), (2, 2), 0.5, 16, torch.float16, 'CHWN') 
+  except RuntimeError:
+    return
+  assert ac_y
+  assert ac_dx
+  assert ac_dw
 
-class TestConv2d(unittest.TestCase):
-
-  def test_full_fp32(self):
-    dtype = torch.float32
-    ac_y, ac_dx, ac_dw = test_conv2d(36, 32, 27, 27, 64, 3, 3,
-                                    (1, 1), (2, 2), 0.5, 16, dtype, 'CHWN') 
-    self.assertTrue(ac_y)
-    self.assertTrue(ac_dx)
-    self.assertTrue(ac_dw)
-    
-
-#############
-# Run tests #
-#############
-
-if __name__ == '__main__':
-  unittest.main()
+def test_full_fp32():
+  ac_y, ac_dx, ac_dw = run_test_conv2d(36, 32, 27, 27, 64, 3, 3,
+                                       (1, 1), (2, 2), 0.5, 16, torch.float32, 'CHWN') 
+  assert ac_y
+  assert ac_dx
+  assert ac_dw

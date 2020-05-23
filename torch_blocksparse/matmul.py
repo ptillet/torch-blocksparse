@@ -206,7 +206,7 @@ class _sparse_matmul(torch.autograd.Function):
     # heuristics taken from OpenAI blocksparse code
     # https://github.com/openai/blocksparse/blob/master/blocksparse/matmul.py#L95
     max_size = sizes.max()
-    min_size = sizes[torch.nonzero(sizes)].min()
+    min_size = sizes[sizes != 0].min()
     #if max_size > min_size * 2.0:
     #  seg_max = max(triton.cdiv(max_size, 4), min_size*2)
     #else:
@@ -360,9 +360,9 @@ class _sparse_matmul(torch.autograd.Function):
     segments *= step
     # pointer increments
     if trans:
-      nnz = torch.nonzero(layout)
+      nnz = layout.nonzero()
     else:
-      nnz = torch.nonzero(layout.transpose(1, 2))
+      nnz = layout.transpose(1, 2).nonzero()
     num_blocks = nnz.size(0)
     offsets = torch.min(offsets, (num_blocks - 1)*torch.ones_like(offsets))
     idx = transform(nnz[:, 2]*block)

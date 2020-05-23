@@ -1,14 +1,15 @@
 import torch_blocksparse
 import torch
 import multiprocessing
-
+from nose.tools import nottest
+from parameterized import parameterized
 
 
 def task(query, key, value, add_mask, Embed, NumHeads, sparsity):
     mha = torch_blocksparse.MultiheadAttention(Embed, NumHeads, sparsity).cuda()
     mha(query, key, value, key_padding_mask=add_mask, need_weights=False)
 
-if __name__ == '__main__':
+def test_main():
     torch.multiprocessing.freeze_support()
 
     use_half = False
