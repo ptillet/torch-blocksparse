@@ -5,3 +5,4 @@ from .attention import MultiheadAttention
 from .simplifiedsparseattention import SimplifiedSparseAttention
 from .batchnorm import BatchNorm2d
 from .permute import _permute, Permute
+from .relu import ReLU

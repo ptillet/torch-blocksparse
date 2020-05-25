@@ -7,21 +7,24 @@ src = '''
   __global__ void NAME (TYPE* A __readonly  __noalias __aligned(16),
                         TYPE* B __readonly  __noalias __aligned(16),
                         TYPE* C __noalias __aligned(16),
+                        TYPE* X __readonly __noalias __aligned(16),
+                        float* dbias0, float* dbias1,
+                        TYPE bias0, TYPE bias1,
                         // shapes
                         int H, int W, int R, int S, int CC __multipleof(BLOCK),
-                        int N __multipleof(4), int P, int Q, int K __multipleof(BLOCK),
+                        int N __multipleof(MULT), int P, int Q, int K __multipleof(BLOCK),
                         int pad_h, int pad_w,
                         int stride_h, int stride_w,
                         // a strides
-                        int stride_na __multipleof(4),
-                        int stride_ca __multipleof(4),
-                        int stride_ha __multipleof(4),
-                        int stride_wa __multipleof(4),
+                        int stride_na __multipleof(MULT),
+                        int stride_ca __multipleof(MULT),
+                        int stride_ha __multipleof(MULT),
+                        int stride_wa __multipleof(MULT),
                         // c strides
-                        int stride_nc __multipleof(4),
-                        int stride_kc __multipleof(4),
-                        int stride_hc __multipleof(4),
-                        int stride_wc __multipleof(4),
+                        int stride_nc __multipleof(MULT),
+                        int stride_kc __multipleof(MULT),
+                        int stride_hc __multipleof(MULT),
+                        int stride_wc __multipleof(MULT),
                         // lut and locks
                         int* lut, int* locks, int nlocks) {
      /* ---------------- */
@@ -126,6 +129,13 @@ src = '''
     bool checkb[TL, TN] = 1;
     TYPE a[TM, TL] = checka ? *pa : 0;
     TYPE b[TL, TN] = checkb ? *pb : 0;
+#ifdef HAS_BIAS0
+    a += bias0;
+    a = (a > 0) ? a : 0;
+#endif
+#ifdef HAS_BIAS1
+    a += bias1;
+#endif
 
     /* ---------------- */
     /*    Inner Loop    */
@@ -180,8 +190,14 @@ src = '''
       bool checkb[TL, TN] = checkbn[newaxis, :] && checkbl[:, newaxis];
       a = checka ? *pa : 0;
       b = checkb ? *pb : 0;
+#ifdef HAS_BIAS0
+      a += bias0;
+      a = (a > 0) ? a : 0;
+#endif
+#ifdef HAS_BIAS1
+      a += bias1;
+#endif
     }
-    TYPE c[TM, TN] = acc;
 
     /* ---------------- */
     /*    Epilogue      */
@@ -202,6 +218,16 @@ src = '''
                          + rc_k[newaxis, :] * STRIDE_KC;
     TYPE* pc[TM, TN] = C + offc;
     bool checkc[TM, TN] = rc_npq[:, newaxis] < N*P*Q;
+#endif
+    TYPE c[TM, TN] = acc;
+#ifdef HAS_BIAS1_DX
+    f32_atomic_add(dbias1, ((float[TM*TN])c)[+]);
+#endif
+#ifdef HAS_BIAS0_DX
+    TYPE* px[TM, TN] = X + offc;
+    TYPE   x[TM, TN] = *px;
+    c = (x + bias0 > 0) ? c : 0;
+    f32_atomic_add(dbias0, ((float[TM*TN])c)[+]);
 #endif
     // write-back directly
     if(lockid == 0) {
@@ -413,9 +439,22 @@ class _sparse_conv2d(torch.autograd.Function):
   # OPERATORS              #
   ##########################
 
+  @staticmethod
+  def _get_mult(n):
+    if n % 16 == 0:
+      return 16
+    if n % 8 == 0:
+      return 8
+    if n % 4 == 0:
+      return 4
+    if n % 2 == 0:
+      return 2
+    return 1
+
   # Sparse = Dense x Dense
   @staticmethod
-  def _sdd_conv2d(a, b, order, pad_h, pad_w, stride_h, stride_w,
+  def _sdd_conv2d(a, b, bias0, bias1,
+                  order, pad_h, pad_w, stride_h, stride_w,
                   num_blocks, kernel_size, block, step, lut, num_locks, width, 
                   bench, time):
     # sanity checks
@@ -427,6 +466,7 @@ class _sparse_conv2d(torch.autograd.Function):
     assert a_dtype == b_dtype
     assert Na == Nb
     c = torch.empty((num_blocks, block, block), dtype=a.dtype, device=a.device)
+    mult = _sparse_conv2d._get_mult(Na)
     # create kernel
     defines = {'NAME': 'sdd_conv2d', 
                'TYPE': a.dtype,
@@ -435,6 +475,7 @@ class _sparse_conv2d(torch.autograd.Function):
                'TN': block, 
                'BLOCK': block,
                'TZ': [1, 8, 16], 
+               'MULT': mult,
                'DW': True,
                'STRIDE_NA': 1 if order[-1] == 'N' else 'stride_na',
                'STRIDE_CA': 1 if order[-1] == 'C' else 'stride_ca',
@@ -442,14 +483,26 @@ class _sparse_conv2d(torch.autograd.Function):
                'STRIDE_WA': 'stride_wa',
                'STRIDE_KB': 1 if order[-1] == 'C' else 'stride_kc',
                'STRIDE_NPQB': 1 if order[-1] == 'N' else 'K'}
+    has_bias0 = bias0 is not None
+    has_bias1 = bias1 is not None
+    if has_bias0:
+      defines['HAS_BIAS0'] = True
+    if has_bias1:
+      defines['HAS_BIAS1'] = True
     cache = _sparse_conv2d.sdd_cache
-    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a_dtype), num_warps=[2, 4])
+    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a_dtype, has_bias0, has_bias1, mult), num_warps=[2, 4])
     # create semaphores
     locks = _sparse_conv2d.get_locks(a.device, 2*width*num_locks)
     # create output
     stride_na, stride_ca, stride_ha, stride_wa = a.stride()
     stride_nc, stride_kc, stride_pc, stride_qc = b.stride()
-    kernel(a, b, c, 
+    bias0 = bias0.item() if has_bias0 else 0
+    bias1 = bias1.item() if has_bias1 else 0
+    x = torch.empty((0,), device=a.device, dtype=a.dtype)
+    dbias0 = torch.zeros((0,), device=a.device, dtype=torch.float32)
+    dbias1 = torch.zeros((0,), device=a.device, dtype=torch.float32)
+    #print('STRIDES/SHAPES', a.stride(), b.stride(), c.stride(), a.shape, b.shape, c.shape)
+    kernel(a, b, c, x, dbias0, dbias1, bias0, bias1,
           H, W, R, S, C,
           Na, P, Q, K,
           pad_h, pad_w, stride_h, stride_w,
@@ -472,7 +525,8 @@ class _sparse_conv2d(torch.autograd.Function):
 
   # Dense = Dense x Sparse
   @staticmethod
-  def _dds_conv2d(a, b, order, nchwkrspq,
+  def _dds_conv2d(a, b, x, bias0, bias1, 
+                  order, nchwkrspq,
                   pad_h, pad_w, stride_h, stride_w,
                   is_dx, block, 
                   step, lut, num_locks, width, da_offs,
@@ -484,12 +538,16 @@ class _sparse_conv2d(torch.autograd.Function):
       H, P = P, H
       W, Q = Q, W
     # create kernel
+    has_bias0 = bias0 is not None
+    has_bias1 = bias1 is not None
+    mult = _sparse_conv2d._get_mult(N)
     defines = {'NAME': 'dds_conv2d_' + ('_dx' if is_dx else '_y'), 
                'TYPE': a.dtype,
-               'TM': [64, 128, 256], 
+               'TM': [128, 256], 
                'TL': step, 
                'TN': block, 
                'BLOCK': block,
+               'MULT': mult,
                'STRIDE_BK': 1 if is_dx else block,
                'STRIDE_BC': block if is_dx else 1,
                'STRIDE_NA': 1 if order[-1] == 'N' else 'stride_na',
@@ -502,16 +560,25 @@ class _sparse_conv2d(torch.autograd.Function):
                'STRIDE_WC': 'stride_wc'}
     if is_dx:
       defines['DX'] = True
-      defines['TRANSFORM_H'] = 'rc_p * stride_h + pad_h'
+    if has_bias0:
+      defines['HAS_BIAS0_DX' if is_dx else 'HAS_BIAS0'] = True
+    if has_bias1:
+      defines['HAS_BIAS1_DX' if is_dx else 'HAS_BIAS1'] = True
     cache = _sparse_conv2d.dds_cache
-    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a.dtype, is_dx), num_warps=[2, 4])
+    kernel = _sparse_conv2d.make_kernel(src, defines, cache, (block, a.dtype, is_dx, has_bias0, has_bias1, mult), num_warps=[4])
     # create output
     if order == 'NHWC':
       c = torch.zeros(N, P, Q, K, dtype=a.dtype, device=a.device).permute(0,3,1,2)
     if order == 'CHWN':
       c = torch.zeros(K, P, Q, N, dtype=a.dtype, device=a.device).permute(3,0,1,2)
+    if x is None:
+      x = torch.empty((0,), device=a.device, dtype=a.dtype)
     stride_na, stride_ca, stride_ha, stride_wa = a.stride()
+    bias0 = bias0.item() if has_bias0 else 0
+    bias1 = bias1.item() if has_bias1 else 0
     if is_dx:
+      dbias0 = torch.zeros((1,), device=a.device, dtype=torch.float32)
+      dbias1 = torch.zeros((1,), device=a.device, dtype=torch.float32)
       for da_lut, da_num_locks, da_width, (a_pad_h, a_pad_w, off_bh, off_bw, off_ch, off_cw) in zip(lut, num_locks, width, da_offs):
         if da_width == 0:
           continue
@@ -524,7 +591,7 @@ class _sparse_conv2d(torch.autograd.Function):
           cc = c[:, :, off_ch::stride_h, off_cw::stride_w]
           stride_nc, stride_kc, stride_pc, stride_qc = cc.stride()
           N, K, P, Q = cc.shape
-          kernel(a, b, cc,
+          kernel(a, b, cc, x, dbias0, dbias1, bias0, bias1,
                 H, W, R, S, C,
                 N, P, Q, K,
                 a_pad_h, a_pad_w, 
@@ -534,10 +601,21 @@ class _sparse_conv2d(torch.autograd.Function):
                 da_lut, da_locks, da_num_locks, 
                 grid = lambda opt: [da_width, triton.cdiv(N*P*Q, opt.d('TM'))], 
                 bench = bench)
+      if not has_bias0:
+        dbias0 = None
+      else:
+        dbias0 = dbias0.type(a.dtype)
+      if not has_bias1:
+        dbias1 = None
+      else:
+        dbias1 = dbias1.type(a.dtype)
+      return c, dbias0, dbias1
     else:
+      dbias0 = torch.zeros((0,), device=a.device, dtype=torch.float32)
+      dbias1 = torch.zeros((0,), device=a.device, dtype=torch.float32)
       stride_nc, stride_kc, stride_pc, stride_qc = c.stride()
       locks = _sparse_conv2d.get_locks(a.device, 2*width*num_locks*N*P*Q)
-      kernel(a, b, c, 
+      kernel(a, b, c, x, dbias0, dbias1, bias0, bias1,
             H, W, R, S, C,
             N, P, Q, K,
             pad_h, pad_w, stride_h, stride_w,
@@ -546,12 +624,11 @@ class _sparse_conv2d(torch.autograd.Function):
             lut, locks, num_locks, 
             grid = lambda opt: [width, triton.cdiv(N*P*Q, opt.d('TM'))], 
             bench = bench)
-
-    return c
+      return c
 
   
   @staticmethod
-  def forward(ctx, a, b, 
+  def forward(ctx, a, b, bias0, bias1,
               order, nchwkrspq, pad_h, pad_w, stride_h, stride_w, 
               num_blocks, kernel_size, block,
               c_step, c_lut,  c_num_locks,  c_width,
@@ -565,13 +642,13 @@ class _sparse_conv2d(torch.autograd.Function):
     # N, C, H, W, K, R, S, P, Q = nchwkrspq
     # ctx.save_for_backward(a, b)
     # return torch.empty(N, K, P, Q, dtype=a.dtype, device=a.device).contiguous(memory_format=torch.channels_last)
-    c = _sparse_conv2d._dds_conv2d(a, b, order,
+    c = _sparse_conv2d._dds_conv2d(a, b, None, bias0, bias1, order,
                                    nchwkrspq, pad_h, pad_w, stride_h, stride_w,
                                    False, block, 
                                    c_step, c_lut, c_num_locks, c_width, None,
                                    bench, c_time)
     # save for backward
-    ctx.save_for_backward(a, b)
+    ctx.save_for_backward(a, b, bias0, bias1)
     # da parameters
     ctx.da_step = da_step
     ctx.da_lut = da_lut
@@ -608,22 +685,28 @@ class _sparse_conv2d(torch.autograd.Function):
     # da = torch.empty_like(a)
     # db = torch.empty_like(b)
     # retrieve from context
-    a, b         = ctx.saved_tensors
+    a, b, bias0, bias1 = ctx.saved_tensors
     # gradients w.r.t. a
     da = None
+    dbias0 = None
+    dbias1 = None
     if ctx.needs_input_grad[0]:
-      da = _sparse_conv2d._dds_conv2d(dc, b, ctx.order, ctx.nchwkrspq, ctx.pad_h, ctx.pad_w, ctx.stride_h, ctx.stride_w,
+      da, dbias0, dbias1 = _sparse_conv2d._dds_conv2d(dc, b, a, bias0, bias1, ctx.order, ctx.nchwkrspq, ctx.pad_h, ctx.pad_w, ctx.stride_h, ctx.stride_w,
                        True, ctx.block, 
                        ctx.da_step, ctx.da_lut, ctx.da_num_locks, ctx.da_width, ctx.da_offs,
                        ctx.bench, ctx.da_time)
     # gradients w.r.t. b
     db = None
     if ctx.needs_input_grad[1]:
-      db = _sparse_conv2d._sdd_conv2d(a, dc, ctx.order, ctx.pad_h, ctx.pad_w, ctx.stride_h, ctx.stride_w,
+      db = _sparse_conv2d._sdd_conv2d(a, dc, bias0, bias1, ctx.order, ctx.pad_h, ctx.pad_w, ctx.stride_h, ctx.stride_w,
                                       ctx.num_blocks, ctx.kernel_size, ctx.block,
                                       ctx.db_step, ctx.db_lut, ctx.db_num_locks, ctx.db_width,
                                       ctx.bench, ctx.db_time)
-    return da, db, None, None, None,\
+    #print(da.nonzero().shape[0], db.nonzero().shape[0])
+    #print(da)
+    #print(db)
+    return da, db, dbias0, dbias1,\
+           None, None, None, None,\
            None, None, None, None,\
            None, None, None, None,\
            None, None, None, None,\
@@ -715,7 +798,7 @@ class Conv2d(torch.nn.Module):
 
   def __init__(self, in_channels, out_channels, kernel_size, layout, block, padding = (0,0), stride = (1,1), order='NHWC', bias = False):
     if order not in ['NHWC', 'CHWN']:
-      raise ValueError('Only NHWC and CHWN orders are supported')
+      raise ValueError('Order must be one of: NHWC, CHWN')
     if in_channels % block != 0:
       raise ValueError('Input channels must be multiple of block size')
     if out_channels % block != 0:
@@ -747,6 +830,10 @@ class Conv2d(torch.nn.Module):
         fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
         bound = 1 / math.sqrt(fan_in)
         init.uniform_(self.bias, -bound, bound)
+  
+  def fixup_init(self, num_layers):
+    K, R, S = self.out_channels, self.kernel_size[0], self.kernel_size[1]
+    torch.nn.init.normal_(self.weight, mean=0, std=np.sqrt(2 / (K*R*S)) * num_layers ** (-0.25))
 
   # def extra_repr(self):
   #   s = ''
@@ -786,7 +873,7 @@ class Conv2d(torch.nn.Module):
   def clear_cache(self):
     self.lut_cache = dict()
 
-  def forward(self, a):
+  def __call__(self, a, biasa = None, biasb = None):
     N, Ca, H, W = a.shape
     K, Cb, R, S = self.out_channels, self.in_channels, self.kernel_size[0], self.kernel_size[1]
     P = (H + 2*self.padding[0] - R)//self.stride[0] + 1
@@ -801,7 +888,8 @@ class Conv2d(torch.nn.Module):
                                                          a.stride(), self.stride[0], self.stride[1],\
                                                          self.padding[0], self.padding[1])
     # run kernel
-    c = Conv2d.sparse_conv2d(a, self.weight, self.order, nchwkrspq, 
+    c = Conv2d.sparse_conv2d(a, self.weight, biasa, biasb, 
+                             self.order, nchwkrspq, 
                              self.padding[0], self.padding[1], self.stride[0], self.stride[1],
                              self.num_blocks, self.kernel_size, self.block,
                              c_step, c_lut, c_num_locks, c_width,

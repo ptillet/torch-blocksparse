@@ -14,8 +14,8 @@ layout = torch.randint(0, 2, (H, M//block, N//block))
 # create object for Sparse = trans(Dense) x Dense (sdd)
 # some overhead there as it pre-computes look-up tables 
 # internally needed by GPU kernels
-dot = torch_blocksparse.SparseMatMul(layout, block, 'sdd', trans_a=True, trans_b=False)
+dot = torch_blocksparse.MatMul(layout, block, 'sdd', trans_a=True, trans_b=False)
 c = dot(a, b)
 # create object for Sparse = softmax(Sparse)
-softmax = torch_blocksparse.SparseSoftmax(layout, block)
+softmax = torch_blocksparse.Softmax(layout, block)
 d = softmax(c)
