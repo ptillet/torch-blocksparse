@@ -27,7 +27,7 @@ src = '''
                         int stride_wc __multipleof(MULT),
                         // lut and locks
                         int* lut, int* locks, int nlocks) {
-     /* ---------------- */
+   /* ---------------- */
     /*    Prologue      */
     /* ---------------- */
     // program ids
@@ -130,11 +130,11 @@ src = '''
     TYPE a[TM, TL] = checka ? *pa : 0;
     TYPE b[TL, TN] = checkb ? *pb : 0;
 #ifdef HAS_BIAS0
-    a += bias0;
+    a = checka ? a + bias0 : a;
     a = (a > 0) ? a : 0;
 #endif
 #ifdef HAS_BIAS1
-    a += bias1;
+    a = checka ? a + bias1 : a;
 #endif
 
     /* ---------------- */
@@ -191,11 +191,11 @@ src = '''
       a = checka ? *pa : 0;
       b = checkb ? *pb : 0;
 #ifdef HAS_BIAS0
-      a += bias0;
+      a = checka ? a + bias0 : a;
       a = (a > 0) ? a : 0;
 #endif
 #ifdef HAS_BIAS1
-      a += bias1;
+      a = checka ? a + bias1 : a;
 #endif
     }
 

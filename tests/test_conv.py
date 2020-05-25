@@ -118,7 +118,7 @@ def run_test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, dtype, do_bias
   ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
   ac_dx = torch.allclose(rdx, tdx, rtol=1e-4, atol=1e-5)
   ac_dw = torch.allclose(rdw, tdw, rtol=1e-4, atol=1e-5)
-  print(ry - ty)
+  ac_dbiasa, ac_dbiasb = None, None
   if do_biasa:
     ac_dbiasa = torch.allclose(rdbiasa, tdbiasa, rtol=1e-4, atol=1e-5)
   if do_biasb:
@@ -139,11 +139,14 @@ def test_full_fp16():
   assert ac_dbiasa
   assert ac_dbiasb
 
+
 def test_full_fp32():
   ac_y, ac_dx, ac_dw, ac_dbiasa, ac_dbiasb = run_test_conv2d(36, 32, 27, 27, 64, 3, 3,
                                        (1, 1), (2, 2), 0.5, 16, torch.float32, True, True, 'CHWN') 
   assert ac_y
   assert ac_dx
   assert ac_dw
-  assert ac_dbiasa
-  assert ac-dbiasb
+  if ac_dbiasa:
+    assert ac_dbiasa
+  if ac_dbiasb:
+    assert ac-dbiasb
