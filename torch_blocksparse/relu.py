@@ -53,15 +53,15 @@ void relu_dxdsdbdres(TYPE *X __readonly  __noalias __aligned(16),
 }
 """
 
-  fwd_kernel = None
-  bwd_kernel = None
+  fwd_kernel = dict()
+  bwd_kernel = dict()
 
   @staticmethod
   def forward(ctx, x, scale, bias, res):
-    if _relu.fwd_kernel is None:
+    if x.dtype not in _relu.fwd_kernel:
       defines = {'TYPE': x.dtype, 'TN': [128, 256, 512]}
-      _relu.fwd_kernel = triton.kernel(_relu.fwd_src, defines=defines, num_warps=[2, 4, 8])
-    kernel = _relu.fwd_kernel
+      _relu.fwd_kernel[x.dtype] = triton.kernel(_relu.fwd_src, defines=defines, num_warps=[2, 4, 8])
+    kernel = _relu.fwd_kernel[x.dtype]
     # launch kernel
     y = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
     N = x.numel()
@@ -77,10 +77,10 @@ void relu_dxdsdbdres(TYPE *X __readonly  __noalias __aligned(16),
     # load from context
     x, y = ctx.saved_tensors
     # get kernel
-    if _relu.bwd_kernel is None:
+    if x.dtype not in _relu.bwd_kernel:
       defines = {'TYPE': x.dtype, 'TN': [128, 256, 512]}
-      _relu.bwd_kernel = triton.kernel(_relu.bwd_src, defines=defines, num_warps=[2, 4, 8])
-    kernel = _relu.bwd_kernel
+      _relu.bwd_kernel[x.dtype] = triton.kernel(_relu.bwd_src, defines=defines, num_warps=[2, 4, 8])
+    kernel = _relu.bwd_kernel[x.dtype]
     # allocate output
     dx = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)
     dres = torch.empty_strided(x.shape, x.stride(), device=x.device, dtype=x.dtype)

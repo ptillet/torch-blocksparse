@@ -70,7 +70,7 @@ def run_test_softmax(Z, H, M, N, scale, rho, block, dtype):
                    for dtype in [torch.float16, torch.float32]
   ]
 )
-def test_full_fp32(block, dtype):
+def test_op(block, dtype):
   ac_y, ac_dx = run_test_softmax(2, 4, 128, 128, 0.5, 0.4, block, dtype)
   assert ac_y
   assert ac_dx

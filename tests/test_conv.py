@@ -126,7 +126,7 @@ def run_test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, dtype, do_bias
   return ac_y, ac_dx, ac_dw, ac_dbiasa, ac_dbiasb
 
 
-def test_full_fp16():
+def test_op_fp16():
   # pass when no tensor cores
   try:
     ac_y, ac_dx, ac_dw, ac_dbiasa, ac_dbiasb = run_test_conv2d(36, 32, 27, 27, 64, 3, 3,
@@ -140,7 +140,7 @@ def test_full_fp16():
   assert ac_dbiasb
 
 
-def test_full_fp32():
+def test_op_fp32():
   ac_y, ac_dx, ac_dw, ac_dbiasa, ac_dbiasb = run_test_conv2d(36, 32, 27, 27, 64, 3, 3,
                                        (1, 1), (2, 2), 0.5, 16, torch.float32, True, True, 'CHWN') 
   assert ac_y

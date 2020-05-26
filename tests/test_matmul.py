@@ -153,7 +153,7 @@ def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
                                 for block in [16, 32, 64]\
     ]
 )
-def test_full_fp32(mode, at, bt, block):
+def test_op(mode, at, bt, block):
   ac_y, ac_dx, ac_dw = run_test_mm(3, 2, 256, 512, 384, 0.5, mode, 
                                   at, bt, block, torch.float32)
   assert ac_y

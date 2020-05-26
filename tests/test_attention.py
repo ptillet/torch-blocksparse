@@ -10,7 +10,7 @@ def task(query, key, value, add_mask, Embed, NumHeads, sparsity):
     mha = torch_blocksparse.MultiheadAttention(Embed, NumHeads, sparsity).cuda()
     mha(query, key, value, key_padding_mask=add_mask, need_weights=False)
 
-def test_main():
+def test_op():
     torch.multiprocessing.freeze_support()
 
     use_half = False

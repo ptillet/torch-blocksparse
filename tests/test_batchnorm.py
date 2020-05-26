@@ -49,7 +49,7 @@ def run_test_batchnorm(N, C, H, W, dtype):
   return ac_y, ac_dx
 
 
-def test_full_fp32():
+def test_op():
   ac_y, ac_dx = run_test_batchnorm(256, 32, 15, 15, torch.float32) 
   assert ac_y
   assert ac_dx

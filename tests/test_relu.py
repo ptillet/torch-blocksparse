@@ -56,8 +56,12 @@ def run_test_relu(N, C, H, W, dtype):
          allclose(rdbias, tdbias),\
          allclose(rdscale, tdscale)
 
-def test_full_fp32():
-  ac_y, ac_dx, ac_res, ac_bias, ac_scale = run_test_relu(32, 256, 15, 15, torch.float32)
+@parameterized([
+  (dtype,) for dtype in [torch.float32]
+])
+
+def test_op(dtype):
+  ac_y, ac_dx, ac_res, ac_bias, ac_scale = run_test_relu(4, 64, 15, 15, dtype)
   assert ac_y
   assert ac_dx
   assert ac_res

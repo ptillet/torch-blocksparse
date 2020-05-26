@@ -18,6 +18,14 @@ def run_test_permute(N, C, H, W, in_order, out_order, dtype):
   ac_y = allclose(ry, ty)
   return ac_y
 
-def test_full_fp32():
-  ac_y = run_test_permute(32, 32, 4, 4, 'NCHW', 'CHWN', torch.float32)
+@parameterized(
+  [
+    (dtype, in_fmt, out_fmt) for dtype in [torch.float16, torch.float32]\
+                             for in_fmt in ['NCHW', 'CHWN']\
+                             for out_fmt in ['NCHW', 'CHWN']\
+                             if in_fmt != out_fmt
+  ]
+)
+def test_op(dtype, in_fmt, out_fmt):
+  ac_y = run_test_permute(32, 32, 4, 4, in_fmt, out_fmt, dtype)
   assert ac_y
