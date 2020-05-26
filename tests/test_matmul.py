@@ -125,9 +125,9 @@ def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   # run
   ry, rdx, rdw = run_mm_reference(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   ty, tdx, tdw = run_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
-  ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
-  ac_dx = torch.allclose(rdx, tdx, rtol=1e-4, atol=1e-5)
-  ac_dw = torch.allclose(rdw, tdw, rtol=1e-4, atol=1e-5)
+  ac_y = allclose(ry, ty)
+  ac_dx = allclose(rdx, tdx)
+  ac_dw = allclose(rdw, tdw)
   return ac_y, ac_dx, ac_dw
   # test
 #   idx = (tdx - rdx).abs() > 1
@@ -143,23 +143,19 @@ def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
 
 @parameterized(
     [
-    ('sdd', False, False),
-    ('sdd', False, True),
-    ('sdd', True, False),
-    ('sdd', True, True),
-    ('dsd', False, False),
-    ('dsd', False, True),
-    ('dsd', True, False),
-    ('dsd', True, True),
-    ('dds', False, False),
-    ('dds', False, True),
-    ('dds', True, False),
-    ('dds', True, True),
+    (mode, at, bt, 32) for mode in ['sdd', 'dsd', 'dds']\
+                       for at   in [False, True]\
+                       for bt   in [False, True]\
+    ]\
+    +\
+    [
+    (mode, False, False, block) for mode in ['sdd', 'dsd', 'dds']\
+                                for block in [16, 32, 64]\
     ]
 )
-def test_full_fp32(mode, at, bt):
+def test_full_fp32(mode, at, bt, block):
   ac_y, ac_dx, ac_dw = run_test_mm(3, 2, 256, 512, 384, 0.5, mode, 
-                                  at, bt, 32, torch.float32)
+                                  at, bt, block, torch.float32)
   assert ac_y
   assert ac_dx
   assert ac_dw

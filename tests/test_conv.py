@@ -115,14 +115,14 @@ def run_test_conv2d(N, C, H, W, K, R, S, pad, stride, rho, block, dtype, do_bias
   ry, rdx, rdw, rdbiasa, rdbiasb = run_conv2d_reference(x, rw, biasa, biasb, dy, pad, stride, layout, block, do_bench=do_bench)
   ty, tdx, tdw, tdbiasa, tdbiasb = run_conv2d_triton(x, tw, biasa, biasb, dy, pad, stride, layout, block, order, do_bench=do_bench)
   # allclose ?
-  ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
-  ac_dx = torch.allclose(rdx, tdx, rtol=1e-4, atol=1e-5)
-  ac_dw = torch.allclose(rdw, tdw, rtol=1e-4, atol=1e-5)
+  ac_y = torch.allclose(ry, ty)
+  ac_dx = torch.allclose(rdx, tdx)
+  ac_dw = torch.allclose(rdw, tdw)
   ac_dbiasa, ac_dbiasb = None, None
   if do_biasa:
-    ac_dbiasa = torch.allclose(rdbiasa, tdbiasa, rtol=1e-4, atol=1e-5)
+    ac_dbiasa = torch.allclose(rdbiasa, tdbiasa)
   if do_biasb:
-    ac_dbiasb = torch.allclose(rdbiasb, tdbiasb, rtol=1e-4, atol=1e-5)
+    ac_dbiasb = torch.allclose(rdbiasb, tdbiasb)
   return ac_y, ac_dx, ac_dw, ac_dbiasa, ac_dbiasb
 
 

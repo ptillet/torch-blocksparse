@@ -50,11 +50,11 @@ def run_test_relu(N, C, H, W, dtype):
   # execute
   ry, rdx, rdres, rdbias, rdscale = run_relu_reference(x, res, bias, scale, dy)
   ty, tdx, tdres, tdbias, tdscale = run_relu_triton(x, res, bias, scale, dy)
-  return torch.allclose(ry, ty, rtol=1e-4, atol=1e-5),\
-         torch.allclose(rdx, tdx, rtol=1e-4, atol=1e-5),\
-         torch.allclose(rdres, tdres, rtol=1e-4, atol=1e-5),\
-         torch.allclose(rdbias, tdbias, rtol=1e-4, atol=1e-5),\
-         torch.allclose(rdscale, tdscale, rtol=1e-4, atol=1e-5)
+  return allclose(ry, ty),\
+         allclose(rdx, tdx),\
+         allclose(rdres, tdres),\
+         allclose(rdbias, tdbias),\
+         allclose(rdscale, tdscale)
 
 def test_full_fp32():
   ac_y, ac_dx, ac_res, ac_bias, ac_scale = run_test_relu(32, 256, 15, 15, torch.float32)

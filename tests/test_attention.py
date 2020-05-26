@@ -1,6 +1,7 @@
 import torch_blocksparse
 import torch
 import multiprocessing
+from utils import *
 from nose.tools import nottest
 from parameterized import parameterized
 
@@ -52,6 +53,6 @@ def test_main():
     sparse_out, _ = sparse_mha(query, key, value, key_padding_mask=add_mask, need_weights=False)
     dense_out, _ = dense_mha(query, key, value, key_padding_mask=mul_mask, need_weights=False)
     if use_half:
-        assert torch.allclose(sparse_out, dense_out, rtol=1e-3, atol=1e-3)
+        assert allclose(sparse_out, dense_out)
     else:
-        assert torch.allclose(sparse_out, dense_out, rtol=1e-5, atol=1e-6)
+        assert allclose(sparse_out, dense_out)

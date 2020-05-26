@@ -44,8 +44,8 @@ def run_test_batchnorm(N, C, H, W, dtype):
   ry, rdx, ry_time, rdx_time = run_batchnorm2d_reference(x, dy, weight, bias, eps, momentum)
   ty, tdx, ty_time, tdx_time = run_batchnorm2d_triton(x, dy, weight, bias, eps, momentum)
   # errors
-  ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
-  ac_dx = torch.allclose(rdx, tdx, rtol=1e-4, atol=1e-5)
+  ac_y = allclose(ry, ty)
+  ac_dx = allclose(rdx, tdx)
   return ac_y, ac_dx
 
 

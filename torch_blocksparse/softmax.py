@@ -172,7 +172,7 @@ class _sparse_softmax(torch.autograd.Function):
                                     'are not yet implemented')
         TM, TN, num_warps = params[bound]
         # just-in-time compile kernel
-        key = (dtype, TM, TN, num_warps, kp_mask_mode, attn_mask_mode)
+        key = (block, dtype, TM, TN, num_warps, kp_mask_mode, attn_mask_mode)
         if key not in cache:
             defines = {'TM': [TM], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
                        'INFINITY': {torch.float32: 'F32_INFINITY',

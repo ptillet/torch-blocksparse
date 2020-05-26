@@ -68,3 +68,9 @@ def compress_weights(w, layout, block):
                                  r, s]
           current += 1
   return blocks
+
+def allclose(x, y):
+  assert x.dtype == y.dtype
+  rtol, atol = {torch.float32: (1e-4, 1e-5),
+                torch.float16: (1e-2, 1e-3)}[x.dtype]
+  return torch.allclose(x, y, rtol=rtol, atol=atol)

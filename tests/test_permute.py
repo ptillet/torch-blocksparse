@@ -15,7 +15,7 @@ def run_test_permute(N, C, H, W, in_order, out_order, dtype):
   ry = torch.empty_strided(shape, stride_y, device=x.device, dtype=dtype)
   ry.copy_(x)
   ty = torch_blocksparse._permute.apply(x, in_order, out_order)
-  ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
+  ac_y = allclose(ry, ty)
   return ac_y
 
 def test_full_fp32():

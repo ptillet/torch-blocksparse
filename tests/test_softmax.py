@@ -48,23 +48,29 @@ def run_test_softmax(Z, H, M, N, scale, rho, block, dtype):
   generator = torch.distributions.categorical.Categorical(probs)
   # initialize tensors
   layout = generator.sample((H, M//block, N//block))
-  x = torch.rand((Z, H, M, N), dtype=dtype, requires_grad=True).cuda()
+  x = torch.rand((Z, H, M, N), dtype=dtype, requires_grad=True, device='cuda')
   dx = torch.rand_like(x)
-  bool_attn_mask = torch.randint(low=0, high=2, size=(N, N), dtype=torch.bool, requires_grad=False).cuda()
-  fp_attn_mask = bool_attn_mask.float()
-  kp_mask = torch.randint(low=0, high=2, size=(Z, N), dtype=dtype, requires_grad=False).cuda()
+  bool_attn_mask = torch.randint(low=0, high=2, size=(N, N), dtype=torch.bool, requires_grad=False, device='cuda')
+  fp_attn_mask = bool_attn_mask.type(dtype)
+  kp_mask = torch.randint(low=0, high=2, size=(Z, N), dtype=dtype, requires_grad=False, device='cuda')
   kp_mask[kp_mask==1.] = float('-inf')
   # execute
   ry, rdx = run_softmax_reference(x, scale, dx, kp_mask, bool_attn_mask, layout, block)
   ty, tdx = run_softmax_triton(x, scale, dx, kp_mask, fp_attn_mask, layout, block)
-  ac_y = torch.allclose(ry, ty, rtol=1e-4, atol=1e-5)
-  ac_dx = torch.allclose(rdx, tdx, rtol=1e-4, atol=1e-5)
+  ac_y  = allclose(ry, ty)
+  ac_dx = allclose(rdx, tdx)
   return ac_y, ac_dx
   # benchmark
   #triton_ts = bench_softmax_triton(x, scale, kp_mask, fp_attn_mask, layout, block) 
   #print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
 
-def test_full_fp32():
-  ac_y, ac_dx = run_test_softmax(1, 12, 128, 128, 0.5, 0.4, 16, torch.float32)
+@parameterized(
+  [
+    (block, dtype) for block in [16, 32, 64]\
+                   for dtype in [torch.float16, torch.float32]
+  ]
+)
+def test_full_fp32(block, dtype):
+  ac_y, ac_dx = run_test_softmax(2, 4, 128, 128, 0.5, 0.4, block, dtype)
   assert ac_y
   assert ac_dx
