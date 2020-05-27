@@ -33,36 +33,48 @@ def run_softmax_reference(x, scale, dx, kp_mask, attn_mask, layout, block):
   y = dense_to_sparse(y, layout, block)
   return y, dx
 
-@nottest
-def bench_softmax_triton(x, scale, kp_mask, attn_mask, layout, block):
-  sparse_softmax = torch_blocksparse.Softmax(layout, block, bench=True)
-  x = dense_to_sparse(x, layout, block)
-  x = sparse_softmax(x, scale=scale, key_padding_mask=kp_mask, attn_mask=attn_mask)
-  return sparse_softmax.time_y*1e-9
-
 
 @nottest
-def run_test_softmax(Z, H, M, N, scale, rho, block, dtype):
-  # probability distribution
-  probs = torch.Tensor([rho, 1-rho])
-  generator = torch.distributions.categorical.Categorical(probs)
-  # initialize tensors
-  layout = generator.sample((H, M//block, N//block))
-  x = torch.rand((Z, H, M, N), dtype=dtype, requires_grad=True, device='cuda')
+def init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x = True):
+  layout = make_layout(rho, (H, M//block, N//block))
+  if dense_x:
+    x = torch.rand((Z, H, M, N), dtype=dtype, requires_grad=True, device='cuda')
+  else:
+    x = torch.rand((Z, layout.sum(), block, block), dtype=dtype, requires_grad=True, device='cuda')
   dx = torch.rand_like(x)
   bool_attn_mask = torch.randint(low=0, high=2, size=(N, N), dtype=torch.bool, requires_grad=False, device='cuda')
   fp_attn_mask = bool_attn_mask.type(dtype)
   kp_mask = torch.randint(low=0, high=2, size=(Z, N), dtype=dtype, requires_grad=False, device='cuda')
   kp_mask[kp_mask==1.] = float('-inf')
-  # execute
+  return layout, x, dx, bool_attn_mask, fp_attn_mask, kp_mask
+
+@nottest
+def run_test_softmax(Z, H, M, N, scale, rho, block, dtype):
+  layout, x, dx, bool_attn_mask, fp_attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype)
   ry, rdx = run_softmax_reference(x, scale, dx, kp_mask, bool_attn_mask, layout, block)
   ty, tdx = run_softmax_triton(x, scale, dx, kp_mask, fp_attn_mask, layout, block)
   ac_y  = allclose(ry, ty)
   ac_dx = allclose(rdx, tdx)
   return ac_y, ac_dx
+
+@nottest
+def run_bench_softmax(Z, H, M, N, scale, rho, block, dtype, repeat=10):
+  layout, x, dx, _, attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x=False)
+  x = x.clone()
+  dx = dx.clone()
+  # forward function
+  sparse_softmax = torch_blocksparse.Softmax(layout, block, bench=False)
+  y = sparse_softmax(x, scale, None, None, 'add', 'mul')
+  # backward function
+  backward = y.grad_fn.apply
+  backward(dx)
+  x = x.clone()
   # benchmark
-  #triton_ts = bench_softmax_triton(x, scale, kp_mask, fp_attn_mask, layout, block) 
-  #print(f'{rho*100}% sparse (block = {block}): {triton_ts*1e3:2.4f}ms')
+  time_y  = bench(lambda: sparse_softmax(x, scale, None, None, 'add', 'mul'), repeat)
+  time_dx = bench(lambda: backward(dx), repeat)
+  gb_y  = 2*nbytes(x)*1e-9
+  gb_dx = 3*nbytes(x)*1e-9
+  return time_y, time_dx, gb_y, gb_dx
 
 @parameterized(
   [
@@ -74,3 +86,33 @@ def test_op(block, dtype):
   ac_y, ac_dx = run_test_softmax(2, 4, 128, 128, 0.5, 0.4, block, dtype)
   assert ac_y
   assert ac_dx
+
+def bench_op():
+  import matplotlib.pyplot as plt
+  f = plt.figure(figsize=(8,8))
+  # vary reduction size
+  perf_y, perf_dx = [], []
+  reduction = [256*i for i in range(1,13)]
+  for N in reduction:
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, 256, N, 0.4, 0., 16, torch.float32)
+    perf_y.append(gb_y/time_y)
+    perf_dx.append(gb_dx/time_dx)  
+  ax = f.add_subplot(211)
+  ax.plot([0] + reduction, [0] + perf_y, label='forward')
+  ax.plot([0] + reduction, [0] + perf_dx, label='backward')
+  plt.legend()
+  # vary number of rows
+  rows = [32*i for i in range(1,16)]
+  perf_y, perf_dx = [], []
+  for M in rows:
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, M, 512, 0.4, 0., 16, torch.float32)
+    perf_y.append(gb_y/time_y)
+    perf_dx.append(gb_dx/time_dx)
+  ax = f.add_subplot(212)
+  ax.plot([0] + rows, [0] + perf_y, label='forward')
+  ax.plot([0] + rows, [0] + perf_dx, label='backward')
+  plt.legend()
+  plt.show()
+
+
+

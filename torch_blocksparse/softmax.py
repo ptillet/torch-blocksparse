@@ -43,9 +43,9 @@ __global__ void softmax_fwd(TYPE *X, float scale,
 
   // pointers to X
   TYPE* px[TN]  = X + pidz * stride_zx
-                        + blockid * BLOCK * BLOCK 
-                        + rxm * BLOCK 
-                        + rxn;
+                    + blockid * BLOCK * BLOCK 
+                    + rxm * BLOCK 
+                    + rxn;
 
   // load  input
   TYPE x[TN] =  check ? *px : -INFINITY;
@@ -153,28 +153,19 @@ class _sparse_softmax(torch.autograd.Function):
         offsets += 2*sizes.numel()
         header = torch.stack((sizes, offsets), dim=1).view(-1)
         lut = torch.cat((header, idx, columns, rows)).type(torch.int32).cuda()
-        return lut, sizes.max()
+        return lut, int(sizes.max())
 
     @staticmethod
     def make_kernel(cache, src, max_k, dtype, block, kp_mask_mode, attn_mask_mode):
-        # pad tile to cover the entire reduction
-        params = {16384: (1, 32768, 16),
-                  8192:  (1, 16384, 16),
-                  4096:  (1, 8192, 16),
-                  2048:  (1, 4096, 16),
-                  1024:  (1, 2048, 16),
-                  512:   (1, 1024, 8),
-                  256:   (1, 512, 4),
-                  128:   (1, 256, 4)}
-        bound = max(128, 2**int(math.log2(max_k-1)))
-        if bound not in params:
+        if max_k >= 32768:
           raise NotImplementedError('Reductions larger than 32768 elements '\
                                     'are not yet implemented')
-        TM, TN, num_warps = params[bound]
+        TN = (int(max_k) + 127)//128 * 128
+        num_warps = 4 if max_k < 512 else (8 if max_k < 1768 else 16)
         # just-in-time compile kernel
-        key = (block, dtype, TM, TN, num_warps, kp_mask_mode, attn_mask_mode)
+        key = (block, dtype, TN, num_warps, kp_mask_mode, attn_mask_mode)
         if key not in cache:
-            defines = {'TM': [TM], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
+            defines = {'TM': [1], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
                        'INFINITY': {torch.float32: 'F32_INFINITY',
                                     torch.float16: 'F16_INFINITY'}[dtype]}
             if kp_mask_mode == 'mul':

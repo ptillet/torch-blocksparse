@@ -1,4 +1,5 @@
 import torch
+from time import time
 
 # convert dense matrix with explicit zeros to sparse matrix
 def dense_to_sparse(w, mask, block):
@@ -45,14 +46,28 @@ def mask_weights(w, layout, block):
                .repeat_interleave(repeat_c, dim=1).cuda().type(w.dtype)
   return w * mask
 
-def bench(fn, repeat):
+def bench(fn, repeat, hook = None):
+  torch.cuda.synchronize()
+  # estimate hook time
+  hook_time = 0
+  if hook is not None:
+    start = time()
+    for i in range(repeat):
+      hook()
+    torch.cuda.synchronize()
+    end = time()
+    hook_time = end - start
+  # run bench
+  fn()
   torch.cuda.synchronize()
   start = time()
   for i in range(repeat):
+    if hook is not None:
+      hook()
     fn()
   torch.cuda.synchronize()
   end = time()
-  ret[3] = (end - start) / repeat
+  return (end - start - hook_time) / repeat
 
 def compress_weights(w, layout, block):
   blocks = torch.empty((layout.sum(), block, block), dtype=w.dtype, device=w.device)
@@ -74,3 +89,13 @@ def allclose(x, y):
   rtol, atol = {torch.float32: (1e-4, 1e-5),
                 torch.float16: (1e-2, 1e-3)}[x.dtype]
   return torch.allclose(x, y, rtol=rtol, atol=atol)
+
+def make_layout(rho, shape):
+  probs = torch.Tensor([rho, 1-rho])
+  generator = torch.distributions.categorical.Categorical(probs)
+  layout = generator.sample(shape)
+  return layout
+
+
+def nbytes(x):
+  return x.nelement() * x.element_size()

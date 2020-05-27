@@ -187,15 +187,9 @@ class BatchNorm2d(torch.nn.modules.batchnorm.BatchNorm2d):
 
         strides = input.stride()
         # CHWN
-        if strides[0] == 1:
-          output = BatchNorm2d._batchnorm(input, self.running_mean, self.running_var, self.weight, self.bias, 
-                                          self.training or not self.track_running_stats, 
-                                          exponential_average_factor, self.eps)
-        #NCHW
-        elif strides[3] == 1:
-          output = torch.nn.functional.batch_norm(
-                              input, self.running_mean, self.running_var, self.weight, self.bias,
-                              self.training or not self.track_running_stats,
-                              exponential_average_factor, self.eps)
-          output = super(BatchNorm2d, self).forward(input)
+        if strides[0] != 1:
+          raise ValueError('Input format must be CHWN')
+        output = BatchNorm2d._batchnorm(input, self.running_mean, self.running_var, self.weight, self.bias, 
+                                        self.training or not self.track_running_stats, 
+                                        exponential_average_factor, self.eps)
         return output
