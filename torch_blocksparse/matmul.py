@@ -38,8 +38,6 @@ src = '''
     int i[TM]        = *(header + (offlutm + 1));
     int j[TN]        = *(header + (offlutn + 2));
     int bkid[TM, TN] = *(header + (offlutm[:,newaxis] + offlutn[newaxis,:] + 3));
-    int offma[TM]    = i * BLOCK;
-    int offnb[TN]    = j * BLOCK;
     int AS1 = SDD_K / TZ;
     int lockid = select(TZ > 1, 1, 0);
     int offka  = pid0 * AS1;
@@ -53,8 +51,8 @@ src = '''
     int offhc = 0;
     int offha = z;
     int offhb = z;
-    int ram[TM] = offma + (0 ... TM) % BLOCK;
-    int rbn[TN] = offnb + (0 ... TN) % BLOCK;
+    int ram[TM] = i*BLOCK + ((0 ... TM) % BLOCK);
+    int rbn[TN] = j*BLOCK + ((0 ... TN) % BLOCK);
 #else
     // load LUT header
     int *header = lut + pid0 * 6;
@@ -163,8 +161,8 @@ src = '''
     // initialize c pointers
 #ifdef SDD
     bool checkc[TM, TN] = 1;
-    int   rcm[TM]    = offmc + (0 ... TM) % BLOCK;
-    int   rcn[TN]    = offnc + (0 ... TN) % BLOCK;
+    int   rcm[TM]    = (0 ... TM) % BLOCK;
+    int   rcn[TN]    = (0 ... TN) % BLOCK;
 #else
     int   rcm[TM]    = offmc + 0 ... TM;
     int   rcn[TN]    = offnc + 0 ... TN;

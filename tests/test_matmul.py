@@ -64,7 +64,6 @@ def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   x, w, dy, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
   ry, rdx, rdw = run_mm_reference(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   ty, tdx, tdw = run_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
-  print(ty)
   ac_y = allclose(ry, ty)
   ac_dx = allclose(rdx, tdx)
   ac_dw = allclose(rdw, tdw)
@@ -98,7 +97,7 @@ def test_op(mode, at, bt, block):
   assert ac_dw
 
 def bench_op():
-  ac_y, ac_dx, ac_dw = run_test_mm(1, 1, 256, 256, 256, 0., 'sdd', False, False, 16, torch.float32)
+  ac_y, ac_dx, ac_dw = run_test_mm(3, 2, 256, 256, 256, 0., 'sdd', False, False, 16, torch.float32)
   assert ac_y
   print(ac_y, ac_dx, ac_dw)
 
