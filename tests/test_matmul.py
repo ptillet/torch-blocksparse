@@ -54,6 +54,8 @@ def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
   x = torch.rand((Z, H, AS0, AS1), dtype=torch.float32, requires_grad=True).cuda()
   w = torch.rand((Z, H, BS0, BS1), dtype=torch.float32, requires_grad=True).cuda()
+  #x = mempad(x, (Z, H, AS0, AS1), (AS1*AS0*H, AS1*AS0, AS1, 1))
+  #w = mempad(w, (Z, H, BS0, BS1), (BS1*BS0*H, BS1*BS0, BS1, 1))
   dy = torch.rand((Z, H, M, N), dtype=torch.float32).cuda()
   x.retain_grad()
   w.retain_grad()
@@ -97,7 +99,7 @@ def test_op(mode, at, bt, block):
   assert ac_dw
 
 def bench_op():
-  ac_y, ac_dx, ac_dw = run_test_mm(3, 2, 256, 256, 256, 0., 'sdd', False, False, 16, torch.float32)
+  ac_y, ac_dx, ac_dw = run_test_mm(1, 1, 512, 512, 512, 0., 'sdd', False, False, 16, torch.float32)
   assert ac_y
   print(ac_y, ac_dx, ac_dw)
 
