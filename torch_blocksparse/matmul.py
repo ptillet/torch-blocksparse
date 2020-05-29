@@ -33,12 +33,11 @@ src = '''
     int blockidn[TN] = (0 ... TN) / BLOCK;
     int offlutm[TM]  = blockidm*(TN/BLOCK)*4;
     int offlutn[TN]  = blockidn*4;
-    int *header      = lut + pid1 * (TN/BLOCK) * (TN/BLOCK) * 4;
+    int *header      = lut + pid1 * (TM/BLOCK) * (TN/BLOCK) * 4;
     int z            = *(header + 0);
-    int i[TM]        = *(header + offlutm + 1);
-    int j[TN]        = *(header + offlutn + 2);
-    int bkid[TM, TN] = *(header + offlutm[:,newaxis] + offlutn[newaxis,:] + 3);
-    bkid = 500;
+    int i[TM]        = *(header + (offlutm + 1));
+    int j[TN]        = *(header + (offlutn + 2));
+    int bkid[TM, TN] = *(header + (offlutm[:,newaxis] + offlutn[newaxis,:] + 3));
     int offma[TM]    = i * BLOCK;
     int offnb[TN]    = j * BLOCK;
     int AS1 = SDD_K / TZ;
@@ -54,6 +53,8 @@ src = '''
     int offhc = 0;
     int offha = z;
     int offhb = z;
+    int ram[TM] = offma + (0 ... TM) % BLOCK;
+    int rbn[TN] = offnb + (0 ... TN) % BLOCK;
 #else
     // load LUT header
     int *header = lut + pid0 * 6;
@@ -97,12 +98,12 @@ src = '''
     int offha = depth;
     int offhb = 0;
 #endif
+    int ram[TM] = offma + 0 ... TM;
+    int rbn[TN] = offnb + 0 ... TN;
 #endif
     // initialize a, b pointers
     int rka[TK] = offka + 0 ... TK;
     int rkb[TK] = offkb + 0 ... TK;
-    int ram[TM] = offma + 0 ... TM;
-    int rbn[TN] = offnb + 0 ... TN;
     TYPE* pa[TM, TK] = A + offpa + pidz * stride_za + offha * stride_ha + ram[:, newaxis] * STRIDE_AM + rka[newaxis, :] * STRIDE_AK;
     TYPE* pb[TK, TN] = B + offpb + pidz * stride_zb + offhb * stride_hb + rbn[newaxis, :] * STRIDE_BN + rkb[:, newaxis] * STRIDE_BK;
     // pre-fetch
@@ -162,8 +163,8 @@ src = '''
     // initialize c pointers
 #ifdef SDD
     bool checkc[TM, TN] = 1;
-    int   rcm[TM]    = (0 ... TM) % BLOCK;
-    int   rcn[TN]    = (0 ... TN) % BLOCK;
+    int   rcm[TM]    = offmc + (0 ... TM) % BLOCK;
+    int   rcn[TN]    = offnc + (0 ... TN) % BLOCK;
 #else
     int   rcm[TM]    = offmc + 0 ... TM;
     int   rcn[TN]    = offnc + 0 ... TN;
@@ -373,7 +374,8 @@ ret_t sdd_segment(at::Tensor layout) {
     BS3 = b.size(2 if trans_b else 3)
     dtype = a.dtype
     # create kernel
-    c = torch.empty((AS0, sum(widths), block, block), dtype=dtype, device=a.device)
+    total_width = sum([width*pack*pack for width,pack in zip(widths, packs)])
+    c = torch.empty((AS0, total_width, block, block), dtype=dtype, device=a.device)
     for lut, width, pack in zip(luts, widths, packs):
       num_lock = 1
       key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack)
@@ -636,10 +638,10 @@ ret_t sdd_segment(at::Tensor layout) {
       db = _sparse_matmul.fn[mode_db](a, dc, not ctx.trans_a, False, ctx.trans_b, ctx.spdims, ctx.block,
                          db_lut, ctx.db_num_locks, ctx.db_width, ctx.db_packs, ctx.db_bench, ctx.db_time)
     return da, db, None, None, None,\
-           None, None, None,\
-           None, None, None, None, None,\
-           None, None, None, None, None,\
-           None, None, None, None, None
+           None, None, None, None,\
+           None, None, None, None, None, None,\
+           None, None, None, None, None, None,\
+           None, None, None, None, None, None
 
 class MatMul:
 
