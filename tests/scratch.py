@@ -18,8 +18,8 @@ void segment_blocks(at::Tensor layout, at::Tensor scratch, int max_width, ret_t&
     if(v == 0)
       continue;
     int topleft  = (m > 0) && (n > 0) ? tmp[h][m-1][n-1].item<int>() : 0;
-    int top      = (m > 0)            ? tmp[h][m-1][n].item<int>()   : 0;
-    int left     = (n > 0)            ? tmp[h][m][n-1].item<int>()   : 0;
+    int top      = (m > 0)            ? tmp[h][m-1][n  ].item<int>() : 0;
+    int left     = (n > 0)            ? tmp[h][m  ][n-1].item<int>() : 0;
     int width    = std::min(left, std::min(top, topleft)) + 1;
     tmp[h][m][n] = width;
     if(width == max_width){
@@ -29,13 +29,13 @@ void segment_blocks(at::Tensor layout, at::Tensor scratch, int max_width, ret_t&
       for(size_t nn = firstn; nn <= n; nn++){
         layout[h][mm][nn] = 0;
         tmp[h][mm][nn] = 0;
+        scratch[current][0] = (int)h;
+        scratch[current][1] = (int)mm;
+        scratch[current][2] = (int)nn;
+        current++;
       }
       m = firstm;
       n = firstn;
-      scratch[current][0] = (int)h;
-      scratch[current][1] = (int)firstm;
-      scratch[current][2] = (int)firstn;
-      current++;
     }
   }
   ret.push_back({max_width, scratch.slice(0, 0, current).clone()});

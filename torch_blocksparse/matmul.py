@@ -29,21 +29,27 @@ src = '''
 #ifdef SDD
     // load LUT header
     pid1 = pid1 + SDD_off_width;
-    int *header = lut + pid1 * 3;
-    int z = *(header + 0);
-    int i = *(header + 1);
-    int j = *(header + 2);
+    int blockidm[TM] = (0 ... TM) / BLOCK;
+    int blockidn[TN] = (0 ... TN) / BLOCK;
+    int offlutm[TM]  = blockidm*(TN/BLOCK)*4;
+    int offlutn[TN]  = blockidn*4;
+    int *header      = lut + pid1 * (TN/BLOCK) * (TN/BLOCK) * 4;
+    int z            = *(header + 0);
+    int i[TM]        = *(header + offlutm + 1);
+    int j[TN]        = *(header + offlutn + 2);
+    int bkid[TM, TN] = *(header + offlutm[:,newaxis] + offlutn[newaxis,:] + 3);
+    bkid = 500;
+    int offma[TM]    = i * BLOCK;
+    int offnb[TN]    = j * BLOCK;
     int AS1 = SDD_K / TZ;
     int lockid = select(TZ > 1, 1, 0);
-    int offka = pid0 * AS1;
-    int offkb = pid0 * AS1;
-    int offma = i * TM;
-    int offnb = j * TN;
-    int offmc = 0;
-    int offnc = 0;
-    int offpa = 0;
-    int offpb = 0;
-    long offpc = pid1 * TM * TN;
+    int offka  = pid0 * AS1;
+    int offkb  = pid0 * AS1;
+    int offmc  = 0;
+    int offnc  = 0;
+    int offpa  = 0;
+    int offpb  = 0;
+    long offpc[TM, TN] = bkid * BLOCK * BLOCK;
     int maxid = TZ;
     int offhc = 0;
     int offha = z;
@@ -154,16 +160,19 @@ src = '''
     /*    Epilogue      */
     /* ---------------- */
     // initialize c pointers
-    int   rcm[TM]    = offmc + 0 ... TM;
-    int   rcn[TN]    = offnc + 0 ... TN;
 #ifdef SDD
     bool checkc[TM, TN] = 1;
-#endif
+    int   rcm[TM]    = (0 ... TM) % BLOCK;
+    int   rcn[TN]    = (0 ... TN) % BLOCK;
+#else
+    int   rcm[TM]    = offmc + 0 ... TM;
+    int   rcn[TN]    = offnc + 0 ... TN;
 #ifdef DSD
     bool checkc[TM, TN] = rcn[newaxis, :] < DS0;
 #endif
 #ifdef DDS
     bool checkc[TM, TN] = rcm[:, newaxis] < DS0;
+#endif
 #endif
     TYPE* pc[TM, TN] = C + offpc + offhc*stride_hc + pidz*stride_zc + rcm[:, newaxis]*STRIDE_CM + rcn[newaxis, :]*STRIDE_CN;
     // write-back directly
@@ -258,23 +267,98 @@ class _sparse_matmul(torch.autograd.Function):
   ##########################
   # SPARSE = DENSE x DENSE #
   ##########################
+  _sdd_segment_src = '''
+typedef std::vector<std::tuple<int, at::Tensor>> ret_t;
+
+void segment_blocks(at::Tensor layout, at::Tensor idx, at::Tensor scratch, int max_width, ret_t& ret){
+  size_t H = layout.size(0);
+  size_t M = layout.size(1);
+  size_t N = layout.size(2);
+  at::Tensor tmp = at::zeros_like(layout);
+  size_t current = 0;
+  for(size_t h = 0; h < H; h++)
+  for(size_t m = 0; m < M; m++)
+  for(size_t n = 0; n < N; n++){
+    int v = layout[h][m][n].item<int>();
+    if(v == 0)
+      continue;
+    int topleft  = (m > 0) && (n > 0) ? tmp[h][m-1][n-1].item<int>() : 0;
+    int top      = (m > 0)            ? tmp[h][m-1][n  ].item<int>() : 0;
+    int left     = (n > 0)            ? tmp[h][m  ][n-1].item<int>() : 0;
+    int width    = std::min(left, std::min(top, topleft)) + 1;
+    tmp[h][m][n] = width;
+    if(width == max_width){
+      int firstm = m - width + 1;
+      int firstn = n - width + 1;
+      for(size_t mm = firstm; mm <= m; mm++)
+      for(size_t nn = firstn; nn <= n; nn++){
+        layout[h][mm][nn] = 0;
+        tmp[h][mm][nn] = 0;
+        scratch[current][0] = (int)h;
+        scratch[current][1] = (int)mm;
+        scratch[current][2] = (int)nn;
+        scratch[current][3] = idx[h][mm][nn].item<int>();
+        current++;
+      }
+      m = firstm;
+      n = firstn;
+    }
+  }
+  if(current > 0)
+    ret.push_back({max_width, scratch.slice(0, 0, current).clone()});
+}
+
+ret_t sdd_segment(at::Tensor layout) {
+  ret_t ret;
+  layout = layout.clone();
+
+  // block index
+  at::Tensor idx = layout.clone();
+  int current = 0;
+  size_t H = layout.size(0);
+  size_t M = layout.size(1);
+  size_t N = layout.size(2);
+  for(size_t h = 0; h < H; h++)
+  for(size_t m = 0; m < M; m++)
+  for(size_t n = 0; n < N; n++){
+    if(layout[h][m][n].item<int>() == 0)
+      continue;
+    idx[h][m][n] = current++;
+  }
+
+  // scratch memory
+  at::Tensor scratch = at::empty({layout.sum().item<int>(), 4}, layout.dtype());
+
+  for(int max_width = 4; max_width > 0; max_width /= 2)
+    segment_blocks(layout, idx, scratch, max_width, ret);
+  return ret;
+}
+'''
+
+  sdd_segment = torch.utils.cpp_extension.load_inline(name='sdd_segment', 
+                                                      cpp_sources=[_sdd_segment_src], 
+                                                      functions=['sdd_segment']).sdd_segment
+
   @staticmethod
   def make_sdd_lut(layout, block):
-    nnz = layout.nonzero()
-    width = layout.sum()
-    # create lut
-    h = nnz[:, 0]
-    i = nnz[:, 1]
-    j = nnz[:, 2]
-    lut = torch.stack((h, i, j), dim=1).view(-1).contiguous()
-    lut = lut.type(torch.int32).cuda()
+    segmented = _sparse_matmul.sdd_segment(layout)
+    luts, widths, packs = [], [], []
+    for size, nnz in segmented:
+      width = nnz.shape[0] // (size*size)
+      h = nnz[:, 0]
+      i = nnz[:, 1]
+      j = nnz[:, 2]
+      b = nnz[:, 3]
+      lut = torch.stack((h, i, j, b), dim=1).view(-1).contiguous()
+      luts.append(lut.type(torch.int32).cuda()) 
+      widths.append(width)
+      packs.append(size)
     # create locks
-    num_locks = 1
-    return lut, num_locks, width
+    return luts, None, widths, packs
 
   @staticmethod
   def _sdd_matmul(a, b, trans_a, trans_b, trans_c,
-                  spdims, block, lut, num_locks, width, 
+                  spdims, block, luts, num_locks, widths, packs,
                   bench, time):
     if trans_c:
       a, b = b, a
@@ -289,36 +373,38 @@ class _sparse_matmul(torch.autograd.Function):
     BS3 = b.size(2 if trans_b else 3)
     dtype = a.dtype
     # create kernel
-    key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c)
-    if key not in _sparse_matmul.sdd_cache:
-      defines =  {'TM': block, 'TN': block, 'TK': 16, 'TYPE': dtype,
-                  'STRIDE_AM': '1'    if trans_a else 'lda', 
-                  'STRIDE_AK': 'lda'  if trans_a else '1',
-                  'STRIDE_BN': 'ldb'  if trans_b else '1', 
-                  'STRIDE_BK': '1'    if trans_b else 'ldb',
-                  'STRIDE_CM': 'ldc', 
-                  'STRIDE_CN': '1',
-                  'SDD': True, 'TZ': 1, 'NAME': 'sdd_kernel'}
-      _sparse_matmul.sdd_cache[key] = triton.kernel(src, defines=defines, num_warps=[1, 2, 4])
-    kernel = _sparse_matmul.sdd_cache[key]
-    # create output
-    locks = _sparse_matmul.get_locks(2*width*AS0*num_locks)
-    c = torch.empty((AS0, width, block, block), dtype=dtype, device=a.device)
-    # maximum grid size is 65535
-    # so operation might be decomposed into multiple
-    # kernel calls
-    max_width = 49152
-    total = 0 if bench else None
-    for off_width in range(0, width, max_width):
-      current  = kernel(a, b, c, 
-                        a.stride(2), b.stride(2), block, 
-                        a.stride(0), b.stride(0), c.stride(0),
-                        a.stride(1), b.stride(1), c.stride(0), 
-                        AS2, AS2, AS3, off_width, lut, locks, num_locks, 
-                        grid = lambda opt: [opt.d('TZ'), min(max_width, width - off_width), AS0], 
-                        bench = bench)
-      total = total + current if bench else None
-    time[0] = total
+    c = torch.empty((AS0, sum(widths), block, block), dtype=dtype, device=a.device)
+    for lut, width, pack in zip(luts, widths, packs):
+      num_lock = 1
+      key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack)
+      if key not in _sparse_matmul.sdd_cache:
+        defines =  {'BLOCK': block, 'TM': block*pack, 'TN': block*pack, 'TK': 16, 'TYPE': dtype,
+                    'STRIDE_AM': '1'    if trans_a else 'lda', 
+                    'STRIDE_AK': 'lda'  if trans_a else '1',
+                    'STRIDE_BN': 'ldb'  if trans_b else '1', 
+                    'STRIDE_BK': '1'    if trans_b else 'ldb',
+                    'STRIDE_CM': block, 
+                    'STRIDE_CN': '1',
+                    'SDD': True, 'TZ': 1, 'NAME': 'sdd_kernel'}
+        _sparse_matmul.sdd_cache[key] = triton.kernel(src, defines=defines, num_warps=[1, 2, 4])
+      kernel = _sparse_matmul.sdd_cache[key]
+      # create output
+      locks = _sparse_matmul.get_locks(2*width*AS0*num_lock)
+      # maximum grid size is 65535
+      # so operation might be decomposed into multiple
+      # kernel calls
+      max_width = 49152
+      total = 0 if bench else None
+      for off_width in range(0, width, max_width):
+        current  = kernel(a, b, c, 
+                          a.stride(2), b.stride(2), block, 
+                          a.stride(0), b.stride(0), c.stride(0),
+                          a.stride(1), b.stride(1), c.stride(0), 
+                          AS2, AS2, AS3, off_width, lut, locks, num_lock, 
+                          grid = lambda opt: [opt.d('TZ'), min(max_width, width - off_width), AS0], 
+                          bench = bench)
+        total = total + current if bench else None
+      time[0] = total
     # save for backward pass
     return c
 
@@ -413,11 +499,11 @@ class _sparse_matmul(torch.autograd.Function):
     lut = lut.type(torch.int32).cuda()
     # create locks
     num_locks = max(1, lockid.max())
-    return lut, num_locks, width
+    return lut, num_locks, width, None
 
   @staticmethod
   def _dds_matmul(a, b, trans_a, trans_b, trans_c,
-              spdims, block, lut, num_locks, width, 
+              spdims, block, lut, num_locks, width, packs,
               bench, time):
     # shapes / dtypes
     AS0 = a.size(0)
@@ -461,7 +547,7 @@ class _sparse_matmul(torch.autograd.Function):
   
   @staticmethod
   def _dsd_matmul(a, b, trans_a, trans_b, trans_c,
-                  spdims, block, lut, num_locks, width,
+                  spdims, block, lut, num_locks, width, packs,
                   bench, time):
     # shapes / dtypes
     AS0 = spdims[0]
@@ -510,20 +596,22 @@ class _sparse_matmul(torch.autograd.Function):
   @staticmethod
   def forward(ctx, a, b, trans_a, trans_b, trans_c,
               mode, spdims, block,
-              c_lut, c_num_locks, c_width, c_bench, c_time,
-              da_lut, da_num_locks, da_width, da_bench, da_time,
-              db_lut, db_num_locks, db_width, db_bench, db_time):
+              c_lut, c_num_locks, c_width, c_packs, c_bench, c_time,
+              da_lut, da_num_locks, da_width, da_packs, da_bench, da_time,
+              db_lut, db_num_locks, db_width, db_packs, db_bench, db_time):
     c = _sparse_matmul.fn[mode](a, b, trans_a, trans_b, trans_c, spdims, block, 
-                                c_lut, c_num_locks, c_width, c_bench, c_time)
+                                c_lut, c_num_locks, c_width, c_packs, c_bench, c_time)
     # save for backward
     ctx.save_for_backward(a, da_lut, b, db_lut)
     ctx.da_num_locks = da_num_locks
     ctx.da_width = da_width
+    ctx.da_packs = da_packs
     ctx.da_bench = da_bench
     ctx.da_time = da_time
     ctx.db_num_locks = db_num_locks
     ctx.db_width = db_width
     ctx.db_bench = db_bench
+    ctx.db_packs = db_packs
     ctx.db_time = db_time
     ctx.mode = mode
     ctx.spdims = spdims
@@ -541,12 +629,12 @@ class _sparse_matmul(torch.autograd.Function):
     if ctx.needs_input_grad[0]:
       mode_da = mode[1] + mode[0] + mode[2]
       da = _sparse_matmul.fn[mode_da](dc, b, False, not ctx.trans_b, ctx.trans_a, ctx.spdims, ctx.block,
-                         da_lut, ctx.da_num_locks, ctx.da_width, ctx.da_bench, ctx.da_time)
+                         da_lut, ctx.da_num_locks, ctx.da_width, ctx.da_packs, ctx.da_bench, ctx.da_time)
     # gradients w.r.t. b
     if ctx.needs_input_grad[1]:
       mode_db = mode[2] + mode[1] + mode[0]
       db = _sparse_matmul.fn[mode_db](a, dc, not ctx.trans_a, False, ctx.trans_b, ctx.spdims, ctx.block,
-                         db_lut, ctx.db_num_locks, ctx.db_width, ctx.db_bench, ctx.db_time)
+                         db_lut, ctx.db_num_locks, ctx.db_width, ctx.db_packs, ctx.db_bench, ctx.db_time)
     return da, db, None, None, None,\
            None, None, None,\
            None, None, None, None, None,\
@@ -560,25 +648,25 @@ class MatMul:
       raise NotImplementedError('Supported modes are: sdd, dsd, dds')
     # C look-up table
     if mode == 'sdd':
-      self.c_lut, self.c_num_locks, self.c_width = _sparse_matmul.make_sdd_lut(layout, block)
+      self.c_lut, self.c_num_locks, self.c_width, self.c_packs = _sparse_matmul.make_sdd_lut(layout, block)
     elif mode == 'dsd':
-      self.c_lut, self.c_num_locks, self.c_width = _sparse_matmul.make_dxx_lut(layout, block, 8, not trans_a)
+      self.c_lut, self.c_num_locks, self.c_width, self.c_packs = _sparse_matmul.make_dxx_lut(layout, block, 8, not trans_a)
     elif mode == 'dds':
-      self.c_lut, self.c_num_locks, self.c_width = _sparse_matmul.make_dxx_lut(layout, block, 8, trans_b)
+      self.c_lut, self.c_num_locks, self.c_width, self.c_packs = _sparse_matmul.make_dxx_lut(layout, block, 8, trans_b)
     # DA look-up table
     if mode == 'sdd':
-      self.da_lut, self.da_num_locks, self.da_width = _sparse_matmul.make_dxx_lut(layout, block, 8, True)
+      self.da_lut, self.da_num_locks, self.da_width, self.da_packs = _sparse_matmul.make_dxx_lut(layout, block, 8, True)
     elif mode == 'dsd':
-      self.da_lut, self.da_num_locks, self.da_width = _sparse_matmul.make_sdd_lut(layout, block)
+      self.da_lut, self.da_num_locks, self.da_width, self.da_packs = _sparse_matmul.make_sdd_lut(layout, block)
     elif mode == 'dds':
-      self.da_lut, self.da_num_locks, self.da_width = _sparse_matmul.make_dxx_lut(layout, block, 8, not trans_b)
+      self.da_lut, self.da_num_locks, self.da_width, self.da_packs = _sparse_matmul.make_dxx_lut(layout, block, 8, not trans_b)
     # DB look-up table
     if mode == 'sdd':
-      self.db_lut, self.db_num_locks, self.db_width = _sparse_matmul.make_dxx_lut(layout, block, 8, False)
+      self.db_lut, self.db_num_locks, self.db_width, self.db_packs = _sparse_matmul.make_dxx_lut(layout, block, 8, False)
     elif mode == 'dsd':
-      self.db_lut, self.db_num_locks, self.db_width = _sparse_matmul.make_dxx_lut(layout, block, 8, trans_a)
+      self.db_lut, self.db_num_locks, self.db_width, self.db_packs = _sparse_matmul.make_dxx_lut(layout, block, 8, trans_a)
     elif mode == 'dds':
-      self.db_lut, self.db_num_locks, self.db_width = _sparse_matmul.make_sdd_lut(layout, block)
+      self.db_lut, self.db_num_locks, self.db_width, self.db_packs = _sparse_matmul.make_sdd_lut(layout, block)
     # attributes
     self.trans_a = trans_a
     self.trans_b = trans_b
@@ -611,9 +699,9 @@ class MatMul:
     # execute
     c = _sparse_matmul.apply(a, b, self.trans_a, self.trans_b, False,
                               self.mode, self.spdims, self.block,
-                              self.c_lut, self.c_num_locks, self.c_width, self.bench, time_c,
-                              self.da_lut, self.da_num_locks, self.da_width, self.bench, time_da,
-                              self.db_lut, self.db_num_locks, self.db_width, self.bench, time_db)
+                              self.c_lut, self.c_num_locks, self.c_width,    self.c_packs,  self.bench, time_c,
+                              self.da_lut, self.da_num_locks, self.da_width, self.da_packs, self.bench, time_da,
+                              self.db_lut, self.db_num_locks, self.db_width, self.db_packs, self.bench, time_db)
     self.time_c = time_c[0]
     self.time_da = time_da[0]
     self.time_db = time_db[0]
