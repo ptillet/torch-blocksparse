@@ -38,7 +38,6 @@ src = '''
     int z            = *(header + 0);
     int i[TM]        = *(header + 1 + offlutm);
     int j[TN]        = *(header + 2 + offlutn);
-    int bkid[TM, TN] = *(header + 3 + offlutmn);
     int AS1 = SDD_K / TZ;
     int lockid = select(TZ > 1, 1, 0);
     int offka  = pid0 * AS1;
@@ -47,7 +46,6 @@ src = '''
     int offnc  = 0;
     int offpa  = 0;
     int offpb  = 0;
-    long offpc[TM, TN] = bkid * BLOCK * BLOCK;
     int maxid = TZ;
     int offhc = 0;
     int offha = z;
@@ -164,6 +162,8 @@ src = '''
     bool checkc[TM, TN] = 1;
     int   rcm[TM]    = (0 ... TM) % BLOCK;
     int   rcn[TN]    = (0 ... TN) % BLOCK;
+    int bkid[TM, TN] = *(header + 3 + offlutmn);
+    long offpc[TM, TN] = bkid * BLOCK * BLOCK;
 #else
     int   rcm[TM]    = offmc + 0 ... TM;
     int   rcn[TN]    = offnc + 0 ... TN;
@@ -175,8 +175,6 @@ src = '''
 #endif
 #endif
     TYPE* pc[TM, TN] = C + offpc + offhc*stride_hc + pidz*stride_zc + rcm[:, newaxis]*STRIDE_CM + rcn[newaxis, :]*STRIDE_CN;
-    *pc = c;
-    /*
     // write-back directly
     if(lockid == 0) {
       *?(checkc) pc = c;
@@ -194,7 +192,6 @@ src = '''
       atomic_xchg(pcount, (count + 1) % maxid);
       atomic_xchg(plock, 0);
     }
-    */
   }
 '''
 
@@ -382,7 +379,7 @@ ret_t sdd_segment(at::Tensor layout) {
       num_lock = 1
       key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack)
       if key not in _sparse_matmul.sdd_cache:
-        defines =  {'BLOCK': block, 'TM': block*pack, 'TN': block*pack, 'TK': 16, 'TYPE': dtype,
+        defines =  {'BLOCK': block, 'TM': block*pack, 'TN': block*pack, 'TK': 8, 'TYPE': dtype,
                     'STRIDE_AM': '1'    if trans_a else 'lda', 
                     'STRIDE_AK': 'lda'  if trans_a else '1',
                     'STRIDE_BN': 'ldb'  if trans_b else '1', 
@@ -606,12 +603,14 @@ ret_t sdd_segment(at::Tensor layout) {
     c = _sparse_matmul.fn[mode](a, b, trans_a, trans_b, trans_c, spdims, block, 
                                 c_lut, c_num_locks, c_width, c_packs, c_bench, c_time)
     # save for backward
-    ctx.save_for_backward(a, da_lut, b, db_lut)
+    ctx.save_for_backward(a, b)
     ctx.da_num_locks = da_num_locks
+    ctx.da_lut   = da_lut
     ctx.da_width = da_width
     ctx.da_packs = da_packs
     ctx.da_bench = da_bench
     ctx.da_time = da_time
+    ctx.db_lut = db_lut
     ctx.db_num_locks = db_num_locks
     ctx.db_width = db_width
     ctx.db_bench = db_bench
@@ -627,18 +626,18 @@ ret_t sdd_segment(at::Tensor layout) {
   @staticmethod
   def backward(ctx, dc):
     # saved for backward
-    a, da_lut, b, db_lut = ctx.saved_tensors
+    a, b = ctx.saved_tensors
     mode = ctx.mode
     # gradients w.r.t. a
     if ctx.needs_input_grad[0]:
       mode_da = mode[1] + mode[0] + mode[2]
       da = _sparse_matmul.fn[mode_da](dc, b, False, not ctx.trans_b, ctx.trans_a, ctx.spdims, ctx.block,
-                         da_lut, ctx.da_num_locks, ctx.da_width, ctx.da_packs, ctx.da_bench, ctx.da_time)
+                         ctx.da_lut, ctx.da_num_locks, ctx.da_width, ctx.da_packs, ctx.da_bench, ctx.da_time)
     # gradients w.r.t. b
     if ctx.needs_input_grad[1]:
       mode_db = mode[2] + mode[1] + mode[0]
       db = _sparse_matmul.fn[mode_db](a, dc, not ctx.trans_a, False, ctx.trans_b, ctx.spdims, ctx.block,
-                         db_lut, ctx.db_num_locks, ctx.db_width, ctx.db_packs, ctx.db_bench, ctx.db_time)
+                         ctx.db_lut, ctx.db_num_locks, ctx.db_width, ctx.db_packs, ctx.db_bench, ctx.db_time)
     return da, db, None, None, None,\
            None, None, None, None,\
            None, None, None, None, None, None,\

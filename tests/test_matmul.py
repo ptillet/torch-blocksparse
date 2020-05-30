@@ -76,7 +76,7 @@ def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, repea
   x, w, dy, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
   op = torch_blocksparse.MatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
   time = bench(lambda: op(x, w), repeat)
-  gflops = 2 * Z * K * float(layout.sum()) * block * block * 1e-9
+  gflops = 2 * Z * H * M * N * K * 1e-9
   return gflops / time
 
 @parameterized(
@@ -100,7 +100,7 @@ def test_op(mode, at, bt, block):
 
 def bench_op():
   perf= run_bench_mm(1, 1, 2048, 2048, 2048, 0., 'sdd',\
-                     True, False, 64, torch.float32)
+                     False, False, 64, torch.float32)
   print(perf)
 
 bench_op()
