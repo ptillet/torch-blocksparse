@@ -99,8 +99,8 @@ def test_op(mode, at, bt, block):
   assert ac_dw
 
 def bench_op():
-  ac_y, ac_dx, ac_dw = run_test_mm(1, 1, 512, 512, 512, 0., 'sdd', False, False, 16, torch.float32)
-  assert ac_y
-  print(ac_y, ac_dx, ac_dw)
+  perf= run_bench_mm(1, 1, 2048, 2048, 2048, 0., 'sdd',\
+                     True, False, 64, torch.float32)
+  print(perf)
 
 bench_op()

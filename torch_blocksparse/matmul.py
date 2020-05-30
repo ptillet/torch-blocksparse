@@ -33,11 +33,12 @@ src = '''
     int blockidn[TN] = (0 ... TN) / BLOCK;
     int offlutm[TM]  = blockidm*(TN/BLOCK)*4;
     int offlutn[TN]  = blockidn*4;
+    int offlutmn[TM, TN] = offlutm[:, newaxis] + offlutn[newaxis, :];
     int *header      = lut + pid1 * (TM/BLOCK) * (TN/BLOCK) * 4;
     int z            = *(header + 0);
     int i[TM]        = *(header + 1 + offlutm);
     int j[TN]        = *(header + 2 + offlutn);
-    int bkid[TM, TN] = *(header + 3 + offlutm[:,newaxis] + offlutn[newaxis,:]);
+    int bkid[TM, TN] = *(header + 3 + offlutmn);
     int AS1 = SDD_K / TZ;
     int lockid = select(TZ > 1, 1, 0);
     int offka  = pid0 * AS1;
@@ -174,6 +175,8 @@ src = '''
 #endif
 #endif
     TYPE* pc[TM, TN] = C + offpc + offhc*stride_hc + pidz*stride_zc + rcm[:, newaxis]*STRIDE_CM + rcn[newaxis, :]*STRIDE_CN;
+    *pc = c;
+    /*
     // write-back directly
     if(lockid == 0) {
       *?(checkc) pc = c;
@@ -191,6 +194,7 @@ src = '''
       atomic_xchg(pcount, (count + 1) % maxid);
       atomic_xchg(plock, 0);
     }
+    */
   }
 '''
 
@@ -328,7 +332,7 @@ ret_t sdd_segment(at::Tensor layout) {
   // scratch memory
   at::Tensor scratch = at::empty({layout.sum().item<int>(), 4}, layout.dtype());
 
-  for(int max_width = 4; max_width > 0; max_width /= 2)
+  for(int max_width = 1; max_width > 0; max_width /= 2)
     segment_blocks(layout, idx, scratch, max_width, ret);
   return ret;
 }
@@ -373,7 +377,7 @@ ret_t sdd_segment(at::Tensor layout) {
     dtype = a.dtype
     # create kernel
     total_width = sum([width*pack*pack for width,pack in zip(widths, packs)])
-    c = torch.empty((AS0, total_width, block, block), dtype=dtype, device=a.device)
+    c = torch.zeros((AS0, total_width, block, block), dtype=dtype, device=a.device)
     for lut, width, pack in zip(luts, widths, packs):
       num_lock = 1
       key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack)
@@ -386,7 +390,7 @@ ret_t sdd_segment(at::Tensor layout) {
                     'STRIDE_CM': block, 
                     'STRIDE_CN': '1',
                     'SDD': True, 'TZ': 1, 'NAME': 'sdd_kernel'}
-        _sparse_matmul.sdd_cache[key] = triton.kernel(src, defines=defines, num_warps=[1, 2, 4])
+        _sparse_matmul.sdd_cache[key] = triton.kernel(src, defines=defines, num_warps=[4])
       kernel = _sparse_matmul.sdd_cache[key]
       # create output
       locks = _sparse_matmul.get_locks(2*width*AS0*num_lock)
