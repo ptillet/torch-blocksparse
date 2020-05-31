@@ -51,7 +51,6 @@ def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   shape = {'sdd': (M, N),
            'dsd': (AS0, AS1),
            'dds': (BS0, BS1)}[mode]
-  layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
   x = torch.rand((Z, H, AS0, AS1), dtype=torch.float32, requires_grad=True).cuda()
   w = torch.rand((Z, H, BS0, BS1), dtype=torch.float32, requires_grad=True).cuda()
   #x = mempad(x, (Z, H, AS0, AS1), (AS1*AS0*H, AS1*AS0, AS1, 1))
@@ -59,11 +58,15 @@ def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   dy = torch.rand((Z, H, M, N), dtype=torch.float32).cuda()
   x.retain_grad()
   w.retain_grad()
-  return x, w, dy, layout
+  return x, w, dy, shape
 
 @nottest
 def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
-  x, w, dy, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
+  x, w, dy, shape = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
+  if layout is None:
+    layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
+  else:
+    assert layout.shape == [H, shape[0]//block, shape[1]//block]
   ry, rdx, rdw = run_mm_reference(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   ty, tdx, tdw = run_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   ac_y = allclose(ry, ty)
@@ -72,11 +75,16 @@ def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   return ac_y, ac_dx, ac_dw
 
 @nottest
-def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, repeat=10):
-  x, w, dy, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
+def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout = None, repeat=10):
+  x, w, dy, shape = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
+  print(x.shape, w.shape)
+  if layout is None:
+    layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
+  else:
+    assert list(layout.shape) == [H, shape[0]//block, shape[1]//block]
   op = torch_blocksparse.MatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
   time = bench(lambda: op(x, w), repeat)
-  gflops = 2 * Z * H * M * N * K * 1e-9
+  gflops = 2 * Z * K * layout.sum() * block * block * 1e-9
   return gflops / time
 
 @parameterized(
@@ -99,8 +107,16 @@ def test_op(mode, at, bt, block):
   assert ac_dw
 
 def bench_op():
-  perf= run_bench_mm(1, 1, 2048, 2048, 2048, 0., 'sdd',\
-                     False, False, 64, torch.float32)
-  print(perf)
+  # attention parameters
+  batch, heads, hidden = 1, 1, 2048
+  # layout parameters
+  block, stride, nv, vs = 16, 64, 4, 1
+  # run benchmark
+  for ctx in [2048]:
+    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
+    import numpy
+    numpy.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
+    perf = run_bench_mm(batch, heads, ctx, ctx, hidden, 0., 'sdd', False, False, block, torch.float32, layout=layout)
+    print(perf)
 
 bench_op()

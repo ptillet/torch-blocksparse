@@ -329,7 +329,7 @@ ret_t sdd_segment(at::Tensor layout) {
   // scratch memory
   at::Tensor scratch = at::empty({layout.sum().item<int>(), 4}, layout.dtype());
 
-  for(int max_width = 1; max_width > 0; max_width /= 2)
+  for(int max_width = 4; max_width > 0; max_width /= 2)
     segment_blocks(layout, idx, scratch, max_width, ret);
   return ret;
 }
@@ -354,6 +354,7 @@ ret_t sdd_segment(at::Tensor layout) {
       widths.append(width)
       packs.append(size)
     # create locks
+    print(widths)
     return luts, None, widths, packs
 
   @staticmethod
@@ -376,6 +377,7 @@ ret_t sdd_segment(at::Tensor layout) {
     total_width = sum([width*pack*pack for width,pack in zip(widths, packs)])
     c = torch.zeros((AS0, total_width, block, block), dtype=dtype, device=a.device)
     for lut, width, pack in zip(luts, widths, packs):
+      print(pack, width*pack*pack)
       num_lock = 1
       key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack)
       if key not in _sparse_matmul.sdd_cache:
