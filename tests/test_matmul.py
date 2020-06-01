@@ -61,7 +61,7 @@ def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   return x, w, dy, shape
 
 @nottest
-def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
+def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout = None):
   x, w, dy, shape = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
   if layout is None:
     layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
@@ -112,10 +112,10 @@ def bench_op():
   # layout parameters
   block, stride, nv, vs = 16, 64, 4, 1
   # run benchmark
-  for ctx in [2048]:
+  for ctx in [4096]:
     layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
-    import numpy
-    numpy.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
+    #import numpy
+    #numpy.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
     perf = run_bench_mm(batch, heads, ctx, ctx, hidden, 0., 'sdd', False, False, block, torch.float32, layout=layout)
     print(perf)
 

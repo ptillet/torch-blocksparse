@@ -276,53 +276,55 @@ void segment_blocks(at::Tensor layout, at::Tensor idx, at::Tensor scratch, int m
   size_t N = layout.size(2);
   at::Tensor tmp = at::zeros_like(layout);
   size_t current = 0;
+  int n_left = -1;
+  std::vector<int> m_tops(N, -1);
   for(size_t h = 0; h < H; h++)
   for(size_t m = 0; m < M; m++)
   for(size_t n = 0; n < N; n++){
     int v     = layout[h][m][n].item<int>();
     if(v == 0)
       continue;
-    int m_top = m;
-    int n_left = n;
-    while(m_top >= 0  &&  tmp[h][--m_top][n].item<int>() == 0);
-    while(n_left >= 0 && tmp[h][m][--n_left].item<int>() == 0);
+    int m_top = m_tops[n];
     int top      = (m_top >= 0)               ? tmp[h][m_top][n].item<int>()      : 0;
     int left     = (n_left >= 0)              ? tmp[h][m][n_left].item<int>()     : 0;
     int topleft  = (m_top >=0 && n_left >= 0) ? tmp[h][m_top][n_left].item<int>() : 0;
     int width    = std::min(left, std::min(top, topleft)) + 1;
-    // width is 1 if there is something inside the exploded block
-    for(int mm = m_top + 1; mm < m; mm++)
+    // reset width if blocks cannot be 
+    // packed together (i.e., there's a 1 "in the middle")
     for(int nn = n_left + 1; nn < n; nn++)
-      if(layout[h][mm][nn].item<int>() == 1)
+      if(m_tops[nn] > m_tops[n])
         width = 1;
     tmp[h][m][n] = width;
-    if(width == max_width){
-      std::vector<size_t> ms;
-      std::vector<size_t> ns;
-      size_t mm = m;
-      size_t nn = n;
-      while(ms.size() < width){
-        if(layout[h][mm][n].item<int>() == 1)
-          ms.push_back(mm);
-        mm--;
-      }
-      while(ns.size() < width){
-        if(layout[h][m][nn].item<int>() == 1)
-          ns.push_back(nn);
-        nn--;
-      }
-      for(size_t mm: ms)
-      for(size_t nn: ns){
-        layout[h][mm][nn] = 0;
-        tmp[h][mm][nn] = 0;
-        scratch[current][0] = (int)h;
-        scratch[current][1] = (int)mm;
-        scratch[current][2] = (int)nn;
-        scratch[current][3] = idx[h][mm][nn].item<int>();
-        current++;
-      }
-      m = ms.back();
-      n = ns.back();
+    n_left = n;
+    m_tops[n] = m;
+    if(width != max_width)
+      continue;
+    std::vector<size_t> ms;
+    std::vector<size_t> ns;
+    ms.reserve(width);
+    ns.reserve(width);
+    size_t mm = m;
+    size_t nn = n;
+    while(ms.size() < width){
+      if(layout[h][mm][n].item<int>() == 1)
+        ms.push_back(mm);
+      mm--;
+    }
+    while(ns.size() < width){
+      if(layout[h][m][nn].item<int>() == 1)
+        ns.push_back(nn);
+      nn--;
+    }
+    for(size_t mm: ms)
+    for(size_t nn: ns)
+    {
+      layout[h][mm][nn] = 0;
+      tmp[h][mm][nn] = 0;
+      scratch[current][0] = (int)h;
+      scratch[current][1] = (int)mm;
+      scratch[current][2] = (int)nn;
+      scratch[current][3] = idx[h][mm][nn].item<int>();
+      current++;
     }
   }
   if(current > 0)
@@ -362,7 +364,9 @@ ret_t sdd_segment(at::Tensor layout) {
 
   @staticmethod
   def make_sdd_lut(layout, block):
+    print('segmenting')
     segmented = _sparse_matmul.sdd_segment(layout)
+    print('segmented')
     luts, widths, packs = [], [], []
     for size, nnz in segmented:
       width = nnz.shape[0] // (size*size)
@@ -375,6 +379,7 @@ ret_t sdd_segment(at::Tensor layout) {
       widths.append(width)
       packs.append(size)
     # create locks
+    print(widths, packs)
     return luts, None, widths, packs
 
   @staticmethod
