@@ -108,7 +108,7 @@ def test_op(mode, at, bt, block):
 
 def bench_op():
   # attention parameters
-  batch, heads, hidden = 1, 1, 2048
+  batch, heads, hidden = 1, 1, 512
   # layout parameters
   block, stride, nv, vs = 16, 64, 4, 1
   # run benchmark

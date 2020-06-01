@@ -274,55 +274,55 @@ void segment_blocks(at::Tensor layout, at::Tensor idx, at::Tensor scratch, int m
   size_t H = layout.size(0);
   size_t M = layout.size(1);
   size_t N = layout.size(2);
-  at::Tensor widths  = at::zeros_like(layout);
-  at::Tensor heights = at::zeros_like(layout);
-  std::vector<at::Tensor> i_idxs;
-  std::vector<at::Tensor> j_idxs;
-  for(size_t k = 0; k < max_width){
-    i_idxs.push_back(at::zeros_like(layout))
-    j_idxs.push_back(at::zeros_like(layout))
-  }
+  at::Tensor tmp = at::zeros_like(layout);
   size_t current = 0;
   for(size_t h = 0; h < H; h++)
   for(size_t m = 0; m < M; m++)
   for(size_t n = 0; n < N; n++){
-    int v = layout[h][m][n].item<int>();
-    int w_top      = (m > 0)            ? widths [h][m-1][n  ].item<int>() : 0;
-    int w_left     = (n > 0)            ? widths [h][m  ][n-1].item<int>() : 0;
-    int h_top      = (m > 0)            ? heights[h][m-1][n  ].item<int>() : 0;
-    int h_left     = (n > 0)            ? heights[h][m  ][n-1].item<int>() : 0;
-    // shapes
-    int width  = (w_left + v > w_top) ? 1 : w_left + v;
-    int height = (h_top  + v > h_left)? 1 : h_top  + v;
-    widths [h][m][n] = width;
-    heights[h][m][n] = height;
-    // nonzero row indices
-    for(size_t j = 0; j < width - 1;  j++)
-      j_idxs[j][h][m][n] = j_idx[j][h][m][n-1];
-    j_idxs[j][h][m][n] = v ? n : j_idxs[j-1][h][m][n];
-    // nonzero col indices
-    for(size_t i = 0; i < height - 1; i++)
-      i_idxs[i][h][m][n] = i_idx[i][h][m-1][n];
-    i_idxs[i][h][m][n] = v ? m : i_idxs[i-1][h][m][n];
-      
-
-
-
+    int v     = layout[h][m][n].item<int>();
+    if(v == 0)
+      continue;
+    int m_top = m;
+    int n_left = n;
+    while(m_top >= 0  &&  tmp[h][--m_top][n].item<int>() == 0);
+    while(n_left >= 0 && tmp[h][m][--n_left].item<int>() == 0);
+    int top      = (m_top >= 0)               ? tmp[h][m_top][n].item<int>()      : 0;
+    int left     = (n_left >= 0)              ? tmp[h][m][n_left].item<int>()     : 0;
+    int topleft  = (m_top >=0 && n_left >= 0) ? tmp[h][m_top][n_left].item<int>() : 0;
+    int width    = std::min(left, std::min(top, topleft)) + 1;
+    // width is 1 if there is something inside the exploded block
+    for(int mm = m_top + 1; mm < m; mm++)
+    for(int nn = n_left + 1; nn < n; nn++)
+      if(layout[h][mm][nn].item<int>() == 1)
+        width = 1;
+    tmp[h][m][n] = width;
     if(width == max_width){
-      int firstm = m - width + 1;
-      int firstn = n - width + 1;
-      for(size_t mm = firstm; mm <= m; mm++)
-      for(size_t nn = firstn; nn <= n; nn++){
+      std::vector<size_t> ms;
+      std::vector<size_t> ns;
+      size_t mm = m;
+      size_t nn = n;
+      while(ms.size() < width){
+        if(layout[h][mm][n].item<int>() == 1)
+          ms.push_back(mm);
+        mm--;
+      }
+      while(ns.size() < width){
+        if(layout[h][m][nn].item<int>() == 1)
+          ns.push_back(nn);
+        nn--;
+      }
+      for(size_t mm: ms)
+      for(size_t nn: ns){
         layout[h][mm][nn] = 0;
-        widths[h][mm][nn] = 0;
+        tmp[h][mm][nn] = 0;
         scratch[current][0] = (int)h;
         scratch[current][1] = (int)mm;
         scratch[current][2] = (int)nn;
         scratch[current][3] = idx[h][mm][nn].item<int>();
         current++;
       }
-      m = firstm;
-      n = firstn;
+      m = ms.back();
+      n = ns.back();
     }
   }
   if(current > 0)
@@ -375,7 +375,6 @@ ret_t sdd_segment(at::Tensor layout) {
       widths.append(width)
       packs.append(size)
     # create locks
-    print(widths)
     return luts, None, widths, packs
 
   @staticmethod
@@ -398,7 +397,6 @@ ret_t sdd_segment(at::Tensor layout) {
     total_width = sum([width*pack*pack for width,pack in zip(widths, packs)])
     c = torch.zeros((AS0, total_width, block, block), dtype=dtype, device=a.device)
     for lut, width, pack in zip(luts, widths, packs):
-      print(pack, width*pack*pack)
       num_lock = 1
       key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack)
       if key not in _sparse_matmul.sdd_cache:
