@@ -12,8 +12,8 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
                             int num_blocks, 
                             int sizemax, 
                             long stride_zx __multipleof(BLOCK), 
-                            int stride_zkpm, 
-                            int stride_zattnm){ 
+                            int stride_zkpm __multipleof(BLOCK), 
+                            int stride_zattnm __multipleof(BLOCK)){ 
   int pidhm = get_program_id(0);
   int pidz = get_program_id(1);
 
@@ -131,11 +131,10 @@ __global__ void softmax_bwd(TYPE * X __readonly __noalias __aligned(16),
     // compute fused softmax backward
     TYPE x[TN] = check ? *px : 0;
     TYPE dx[TN] = check ? *pdx : 0;
-    TYPE xdx[TN] = x * dx;
     float Fdx[TN] = dx;
     float Fx[TN] = x;
-    float Fxdx[TN] = xdx;
-    float Fxdxsum = (check ? Fxdx : 0)[+];
+    float Fxdx[TN] = Fdx*Fx;
+    float Fxdxsum = Fxdx[+];
     float Fy[TN] = Fx * (Fdx - Fxdxsum) * scale;
     TYPE y[TN] = Fy;
 

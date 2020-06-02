@@ -125,7 +125,7 @@ def bench_gpt():
     layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
     #import numpy
     #numpy.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
-    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(batch, heads, ctx, ctx, 0., 0., block, torch.float32, layout=None)
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(batch, heads, ctx, ctx, 0., 0., block, torch.float16, layout=None)
     print(gb_y/time_y)
     print(gb_dx/time_dx)
   
