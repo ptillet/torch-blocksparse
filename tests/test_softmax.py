@@ -119,7 +119,7 @@ def bench_gpt():
   # attention parameters
   batch, heads, hidden = 1, 1, 512
   # layout parameters
-  block, stride, nv, vs = 16, 64, 4, 1
+  block, stride, nv, vs = 64, 64, 4, 1
   # run benchmark
   for ctx in [4096]:
     layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
@@ -128,8 +128,5 @@ def bench_gpt():
     time_y, time_dx, gb_y, gb_dx = run_bench_softmax(batch, heads, ctx, ctx, 0., 0., block, torch.float16, layout=None)
     print(gb_y/time_y)
     print(gb_dx/time_dx)
-  
-bench_gpt()
-
 
 

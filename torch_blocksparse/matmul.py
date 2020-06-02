@@ -33,7 +33,6 @@ src = '''
     int blockidn[TN] = (0 ... TN) / BLOCK;
     int offlutm[TM]  = blockidm*(TN/BLOCK)*4;
     int offlutn[TN]  = blockidn*4;
-    int offlutmn[TM, TN] = offlutm[:, newaxis] + offlutn[newaxis, :];
     int *header      = lut + pid1 * (TM/BLOCK) * (TN/BLOCK) * 4;
     int z            = *(header + 0);
     int i[TM]        = *(header + 1 + offlutm);
@@ -160,10 +159,17 @@ src = '''
     // initialize c pointers
 #ifdef SDD
     bool checkc[TM, TN] = 1;
+    // rematerialize
+    int rr_blockidm[TM]  = (0 ... TM) / BLOCK;
+    int rr_blockidn[TN]  = (0 ... TN) / BLOCK;
+    int rr_offlutm[TM]   = rr_blockidm*(TN/BLOCK)*4;
+    int rr_offlutn[TN]   = rr_blockidn*4;
+    int off_bkid[TM, TN] = 3 + rr_offlutm[:, newaxis] + rr_offlutn[newaxis, :];
+    int bkid[TM, TN]     = *?(checkc)(header + off_bkid);
+    long offpc[TM, TN]   = bkid * BLOCK * BLOCK;
+    // range within blocks
     int   rcm[TM]    = (0 ... TM) % BLOCK;
     int   rcn[TN]    = (0 ... TN) % BLOCK;
-    int bkid[TM, TN] = *(header + 3 + offlutmn);
-    long offpc[TM, TN] = bkid * BLOCK * BLOCK;
 #else
     int   rcm[TM]    = offmc + 0 ... TM;
     int   rcn[TN]    = offnc + 0 ... TN;
