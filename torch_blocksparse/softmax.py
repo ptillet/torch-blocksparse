@@ -32,20 +32,9 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
   int   rbmn[TN] = check ? rbn : size - 1;
 
   // block id and column id
-  long blockid [TN]  = *(LUT + offset + rbmn);
-  long columnid[TN]  = *(LUT + offset + rbmn + num_blocks);
-  long rowid   [TN]  = *(LUT + offset + rbmn + num_blocks*2);
-
-  // pointers to key padding mask
-  TYPE* pkp_m[TN]  = KP_M + pidz * stride_zkpm 
-                              + columnid * BLOCK
-                              + rxn;
-
-  // pointers to attention mask
-  TYPE* pattn_m[TN] = ATTN_M + columnid * BLOCK 
-                                 + rowid * BLOCK * stride_zattnm
-                                 + rxm * stride_zattnm
-                                 + rxn;
+  long blockid [TN]  = *(LUT + offset + rbmn*3 + 0);
+  long columnid[TN]  = *(LUT + offset + rbmn*3 + 1);
+  long rowid   [TN]  = *(LUT + offset + rbmn*3 + 2);
 
   // pointers to X
   TYPE* px[TN]  = X + pidz * stride_zx
@@ -53,6 +42,18 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
                     + rxm * BLOCK 
                     + rxn;
 
+  // pointers to key padding mask
+  TYPE* pkp_m[TN]  = KP_M + pidz * stride_zkpm 
+                          + columnid * BLOCK
+                          + rxn;
+
+  // pointers to attention mask
+  TYPE* pattn_m[TN] = ATTN_M + columnid * BLOCK 
+                             + rowid * BLOCK * stride_zattnm
+                             + rxm * stride_zattnm
+                             + rxn;
+
+ 
   // load  input
   TYPE x[TN] =  check ? *px : -INFINITY;
   // load key-padding mask
@@ -115,7 +116,7 @@ __global__ void softmax_bwd(TYPE * X __readonly __noalias __aligned(16),
     int rbmn[TN] = check ? rbn : size - 1;
 
     // initialize pointers to block-sparse input
-    long blockid[TN] = *(LUT + offset + rbmn);
+    long blockid[TN] = *(LUT + offset + rbmn*3);
 
     TYPE* px[TN] = X + pidz * stride_zx
                          + blockid * BLOCK * BLOCK
@@ -159,14 +160,13 @@ class _sparse_softmax(torch.autograd.Function):
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
         # block indices
         idx = torch.arange(layout.sum())
-        # rows
         rows = layout.nonzero()[:, 1]
-        # columns
         columns = layout.nonzero()[:, 2]
+        core   = torch.stack((idx, columns, rows), dim=1).view(-1)
         # construct look-up table
-        offsets += 2*sizes.numel()
+        offsets = offsets*3 + 2*sizes.numel()
         header = torch.stack((sizes, offsets), dim=1).view(-1)
-        lut = torch.cat((header, idx, columns, rows)).type(torch.int32).cuda()
+        lut = torch.cat((header, core)).type(torch.int32).cuda()
         return lut, int(sizes.max())
 
     @staticmethod

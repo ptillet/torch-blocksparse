@@ -73,7 +73,7 @@ def run_bench_softmax(Z, H, M, N, scale, rho, block, dtype, layout = None, repea
   # benchmark
   time_y  = bench(lambda: sparse_softmax(x, scale, None, None, 'add', 'mul'), repeat)
   time_dx = bench(lambda: backward(dx), repeat)
-  gb_y  = 2*nbytes(x)*1e-9
+  gb_y  = (2*nbytes(x) + nbytes(attn_mask) + nbytes(kp_mask))*1e-9
   gb_dx = 3*nbytes(x)*1e-9
   return time_y, time_dx, gb_y, gb_dx
 
