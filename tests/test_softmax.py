@@ -35,8 +35,9 @@ def run_softmax_reference(x, scale, dx, kp_mask, attn_mask, layout, block):
 
 
 @nottest
-def init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x = True):
-  layout = make_layout(rho, (H, M//block, N//block))
+def init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x = True, layout = None):
+  if layout is None:
+    layout = make_layout(rho, (H, M//block, N//block))
   if dense_x:
     x = torch.rand((Z, H, M, N), dtype=dtype, requires_grad=True, device='cuda')
   else:
@@ -49,8 +50,8 @@ def init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x = True):
   return layout, x, dx, bool_attn_mask, fp_attn_mask, kp_mask
 
 @nottest
-def run_test_softmax(Z, H, M, N, scale, rho, block, dtype):
-  layout, x, dx, bool_attn_mask, fp_attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype)
+def run_test_softmax(Z, H, M, N, scale, rho, block, dtype, layout = None):
+  layout, x, dx, bool_attn_mask, fp_attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype, layout=layout)
   ry, rdx = run_softmax_reference(x, scale, dx, kp_mask, bool_attn_mask, layout, block)
   ty, tdx = run_softmax_triton(x, scale, dx, kp_mask, fp_attn_mask, layout, block)
   ac_y  = allclose(ry, ty)
@@ -58,8 +59,8 @@ def run_test_softmax(Z, H, M, N, scale, rho, block, dtype):
   return ac_y, ac_dx
 
 @nottest
-def run_bench_softmax(Z, H, M, N, scale, rho, block, dtype, repeat=10):
-  layout, x, dx, _, attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x=False)
+def run_bench_softmax(Z, H, M, N, scale, rho, block, dtype, layout = None, repeat=10):
+  layout, x, dx, _, attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x=False, layout=layout)
   x = x.clone()
   dx = dx.clone()
   # forward function
@@ -113,6 +114,22 @@ def bench_op():
   ax.plot([0] + rows, [0] + perf_dx, label='backward')
   plt.legend()
   plt.show()
+
+def bench_gpt():
+  # attention parameters
+  batch, heads, hidden = 1, 1, 512
+  # layout parameters
+  block, stride, nv, vs = 16, 64, 4, 1
+  # run benchmark
+  for ctx in [4096]:
+    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
+    #import numpy
+    #numpy.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(batch, heads, ctx, ctx, 0., 0., block, torch.float32, layout=None)
+    print(gb_y/time_y)
+    print(gb_dx/time_dx)
+  
+bench_gpt()
 
 
 

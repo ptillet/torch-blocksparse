@@ -4,10 +4,16 @@ import math
 
 fwd_kernels = dict()
 fwd_src = '''
-__global__ void softmax_fwd(TYPE *X, float scale,
-                            int *LUT, TYPE *KP_M, TYPE *ATTN_M,
-                            int num_blocks, int sizemax, 
-                            long stride_zx, int stride_zkpm, int stride_zattnm){ 
+__global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16), 
+                            float scale,
+                            int *LUT __readonly __noalias __aligned(16), 
+                            TYPE *KP_M __readonly __noalias __aligned(16), 
+                            TYPE *ATTN_M __readonly __noalias __aligned(16),
+                            int num_blocks, 
+                            int sizemax, 
+                            long stride_zx __multipleof(BLOCK), 
+                            int stride_zkpm, 
+                            int stride_zattnm){ 
   int pidhm = get_program_id(0);
   int pidz = get_program_id(1);
 
@@ -83,9 +89,13 @@ __global__ void softmax_fwd(TYPE *X, float scale,
 bwd_kernels = dict()
 bwd_src = '''
 
-__global__ void softmax_bwd(TYPE * X, float scale,
-                            TYPE* DX, int* LUT,
-                            int sizemax, long stride_zx, long stride_zdx) {
+__global__ void softmax_bwd(TYPE * X __readonly __noalias __aligned(16), 
+                            float scale,
+                            TYPE* DX __readonly __noalias __aligned(16), 
+                            int* LUT,
+                            int sizemax, 
+                            long stride_zx __multipleof(BLOCK), 
+                            long stride_zdx __multipleof(BLOCK)) {
     int pidhm = get_program_id(0);
     int pidz = get_program_id(1);
 
@@ -121,8 +131,12 @@ __global__ void softmax_bwd(TYPE * X, float scale,
     TYPE x[TN] = check ? *px : 0;
     TYPE dx[TN] = check ? *pdx : 0;
     TYPE xdx[TN] = x * dx;
-    TYPE xdxsum = (check ? xdx : 0)[+];
-    TYPE y[TN] = x * (dx - xdxsum) * scale;
+    float Fdx[TN] = dx;
+    float Fx[TN] = x;
+    float Fxdx[TN] = xdx;
+    float Fxdxsum = (check ? Fxdx : 0)[+];
+    float Fy[TN] = Fx * (Fdx - Fxdxsum) * scale;
+    TYPE y[TN] = Fy;
 
     // write-back
     *? (check)pdx = y;
@@ -163,7 +177,7 @@ class _sparse_softmax(torch.autograd.Function):
         TN = (int(max_k) + 127)//128 * 128
         num_warps = 4 if max_k < 512 else (8 if max_k < 1768 else 16)
         # just-in-time compile kernel
-        key = (block, dtype, TN, num_warps, kp_mask_mode, attn_mask_mode)
+        key = (block, dtype, num_warps, TN, kp_mask_mode, attn_mask_mode)
         if key not in cache:
             defines = {'TM': [1], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
                        'INFINITY': {torch.float32: 'F32_INFINITY',
