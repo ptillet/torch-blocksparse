@@ -165,7 +165,7 @@ src = '''
     int rr_offlutm[TM]   = rr_blockidm*(TN/BLOCK)*4;
     int rr_offlutn[TN]   = rr_blockidn*4;
     int off_bkid[TM, TN] = 3 + rr_offlutm[:, newaxis] + rr_offlutn[newaxis, :];
-    int bkid[TM, TN]     = *?(checkc)(header + off_bkid);
+    int bkid[TM, TN]     = *(header + off_bkid);
     long offpc[TM, TN]   = bkid * BLOCK * BLOCK;
     // range within blocks
     int   rcm[TM]    = (0 ... TM) % BLOCK;
@@ -370,9 +370,7 @@ ret_t sdd_segment(at::Tensor layout) {
 
   @staticmethod
   def make_sdd_lut(layout, block):
-    print('segmenting')
     segmented = _sparse_matmul.sdd_segment(layout)
-    print('segmented')
     luts, widths, packs = [], [], []
     for size, nnz in segmented:
       width = nnz.shape[0] // (size*size)
@@ -385,7 +383,6 @@ ret_t sdd_segment(at::Tensor layout) {
       widths.append(width)
       packs.append(size)
     # create locks
-    print(widths, packs)
     return luts, None, widths, packs
 
   @staticmethod

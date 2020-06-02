@@ -77,7 +77,6 @@ def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout
 @nottest
 def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout = None, repeat=10):
   x, w, dy, shape = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
-  print(x.shape, w.shape)
   if layout is None:
     layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
   else:
@@ -107,16 +106,31 @@ def test_op(mode, at, bt, block):
   assert ac_dw
 
 def bench_op():
-  # attention parameters
+  import matplotlib.pyplot as plt
+  f = plt.figure(figsize=(8,8))
+  # attention configuration
   batch, heads, hidden = 1, 1, 512
-  # layout parameters
   block, stride, nv, vs = 16, 64, 4, 1
-  # run benchmark
-  for ctx in [4096]:
+  ctxs = [512, 1024, 2048, 4096, 8192]
+  # Sparse BERT - SDD
+  perfs = []
+  for ctx in ctxs:
     layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
-    #import numpy
-    #numpy.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
     perf = run_bench_mm(batch, heads, ctx, ctx, hidden, 0., 'sdd', False, False, block, torch.float32, layout=layout)
-    print(perf)
+    perfs.append(perf)
+  ax = f.add_subplot(121)
+  ax.plot([0] + ctxs, [0] + perfs)
+  plt.legend()
+  # Sparse GPT2 - SDD
+  perfs = []
+  for ctx in ctxs:
+    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, True, 4, 1)
+    perf = run_bench_mm(batch, heads, ctx, ctx, hidden, 0., 'sdd', False, False, block, torch.float32, layout=layout)
+    perfs.append(perf)
+  ax = f.add_subplot(122)
+  ax.plot([0] + ctxs, [0] + perfs)
+  plt.legend()
+  plt.show()
+
 
 bench_op()
