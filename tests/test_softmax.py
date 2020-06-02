@@ -95,10 +95,10 @@ def bench_op():
   perf_y, perf_dx = [], []
   reduction = [256*i for i in range(1,13)]
   for N in reduction:
-    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, 256, N, 0.4, 0., 16, torch.float32)
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, 256, N, 0.4, 0., 16, torch.float16)
     perf_y.append(gb_y/time_y)
     perf_dx.append(gb_dx/time_dx)  
-  ax = f.add_subplot(211)
+  ax = f.add_subplot(221)
   ax.plot([0] + reduction, [0] + perf_y, label='forward')
   ax.plot([0] + reduction, [0] + perf_dx, label='backward')
   plt.legend()
@@ -106,27 +106,41 @@ def bench_op():
   rows = [32*i for i in range(1,16)]
   perf_y, perf_dx = [], []
   for M in rows:
-    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, M, 512, 0.4, 0., 16, torch.float32)
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, M, 512, 0.4, 0., 16, torch.float16)
     perf_y.append(gb_y/time_y)
     perf_dx.append(gb_dx/time_dx)
-  ax = f.add_subplot(212)
+  ax = f.add_subplot(222)
   ax.plot([0] + rows, [0] + perf_y, label='forward')
   ax.plot([0] + rows, [0] + perf_dx, label='backward')
   plt.legend()
+  # Sparse GPT-2
+  batch, heads = 1, 1
+  block, stride, nv, vs = 64, 64, 4, 1
+  perf_y, perf_dx = [], []
+  ctxs = [1024, 2048, 4096, 8192]
+  for ctx in ctxs:
+    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, True, 4, 1)
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(batch, heads, ctx, ctx, 0., 0., block, torch.float16, layout=layout)
+    perf_y.append(gb_y/time_y)
+    perf_dx.append(gb_dx/time_dx)
+  ax = f.add_subplot(223)
+  ax.plot([0] + ctxs, [0] + perf_y, label='forward')
+  ax.plot([0] + ctxs, [0] + perf_dx, label='backward')
+  plt.legend()
+  # Sparse BERT
+  batch, heads = 1, 1
+  block, stride, nv, vs = 64, 64, 4, 1
+  perf_y, perf_dx = [], []
+  for ctx in ctxs:
+    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(batch, heads, ctx, ctx, 0., 0., block, torch.float16, layout=layout)
+    perf_y.append(gb_y/time_y)
+    perf_dx.append(gb_dx/time_dx)
+  ax = f.add_subplot(224)
+  ax.plot([0] + ctxs, [0] + perf_y, label='forward')
+  ax.plot([0] + ctxs, [0] + perf_dx, label='backward')
+  plt.legend()
   plt.show()
 
-def bench_gpt():
-  # attention parameters
-  batch, heads, hidden = 1, 1, 512
-  # layout parameters
-  block, stride, nv, vs = 64, 64, 4, 1
-  # run benchmark
-  for ctx in [4096]:
-    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
-    #import numpy
-    #numpy.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
-    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(batch, heads, ctx, ctx, 0., 0., block, torch.float16, layout=None)
-    print(gb_y/time_y)
-    print(gb_dx/time_dx)
 
-
+#bench_op()

@@ -174,7 +174,7 @@ class _sparse_softmax(torch.autograd.Function):
           raise NotImplementedError('Reductions larger than 32768 elements '\
                                     'are not yet implemented')
         TN = (int(max_k) + 127)//128 * 128
-        num_warps = 4 if max_k < 512 else (8 if max_k < 1768 else 16)
+        num_warps = 4 if max_k < 512 else (8 if max_k < 2048 else 16)
         # just-in-time compile kernel
         key = (block, dtype, num_warps, TN, kp_mask_mode, attn_mask_mode)
         if key not in cache:
