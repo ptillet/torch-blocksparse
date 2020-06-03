@@ -107,5 +107,5 @@ def prettyprint(x, y, L, x_name = ' '):
   print(frmt.format(*L))
   for i in range(y.shape[0]):
     row = [x[i]] + y[i,:].tolist()
-    frmt = f'{{:>{pad}}}' + f'{{:{pad}.4f}}'*(len(L)-1)
+    frmt = f'{{:>{pad}}}' + f'{{:{pad}.2f}}'*(len(L)-1)
     print(frmt.format(*row))
