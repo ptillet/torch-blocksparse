@@ -51,11 +51,11 @@ def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout
   shape = {'sdd': (M, N),
            'dsd': (AS0, AS1),
            'dds': (BS0, BS1)}[mode]
-  x = torch.rand((Z, H, AS0, AS1), dtype=torch.float32, requires_grad=True).cuda()
-  w = torch.rand((Z, H, BS0, BS1), dtype=torch.float32, requires_grad=True).cuda()
+  x = torch.rand((Z, H, AS0, AS1), dtype=dtype, requires_grad=True, device='cuda')
+  w = torch.rand((Z, H, BS0, BS1), dtype=dtype, requires_grad=True, device='cuda')
   #x = mempad(x, (Z, H, AS0, AS1), (AS1*AS0*H, AS1*AS0, AS1, 1))
   #w = mempad(w, (Z, H, BS0, BS1), (BS1*BS0*H, BS1*BS0, BS1, 1))
-  dy = torch.rand((Z, H, M, N), dtype=torch.float32).cuda()
+  dy = torch.rand((Z, H, M, N), dtype=dtype, device='cuda')
   if layout is None:
     layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
   else:
@@ -105,10 +105,8 @@ def test_op(mode, at, bt, block):
 def bench_op(dtype):
   # attention configuration
   batch, heads, hidden = 1, 1, 512
-  # sparsity configuration
   block, stride, nv, vs = 16, 64, 4, 1
-  # benchmark
-  L = [(mode, uni) for mode in ['sdd', 'dsd'] for uni in [False, True]]
+  L = [(mode, uni) for mode in ['dsd'] for uni in [False, True]]
   xs = [512, 1024, 2048, 4096]
   ys = torch.empty((len(xs), len(L)))
   for j, (mode, uni) in enumerate(L):
