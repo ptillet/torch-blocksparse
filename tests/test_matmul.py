@@ -42,7 +42,7 @@ def run_mm_triton(x, w, mode, trans_a, trans_b, layout, block, dy):
   return y, dx, dw
 
 @nottest
-def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
+def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout):
   torch.manual_seed(1)
   AS0 = K if trans_a else M
   AS1 = M if trans_a else K
@@ -56,17 +56,17 @@ def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   #x = mempad(x, (Z, H, AS0, AS1), (AS1*AS0*H, AS1*AS0, AS1, 1))
   #w = mempad(w, (Z, H, BS0, BS1), (BS1*BS0*H, BS1*BS0, BS1, 1))
   dy = torch.rand((Z, H, M, N), dtype=torch.float32).cuda()
-  x.retain_grad()
-  w.retain_grad()
-  return x, w, dy, shape
-
-@nottest
-def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout = None):
-  x, w, dy, shape = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
   if layout is None:
     layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
   else:
-    assert layout.shape == [H, shape[0]//block, shape[1]//block]
+    assert list(layout.shape) == [H, shape[0]//block, shape[1]//block]
+  x.retain_grad()
+  w.retain_grad()
+  return x, w, dy, shape, layout
+
+@nottest
+def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout = None):
+  x, w, dy, shape, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout)
   ry, rdx, rdw = run_mm_reference(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   ty, tdx, tdw = run_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   ac_y = allclose(ry, ty)
@@ -76,14 +76,11 @@ def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout
 
 @nottest
 def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout = None, repeat=10):
-  x, w, dy, shape = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
-  if layout is None:
-    layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
-  else:
-    assert list(layout.shape) == [H, shape[0]//block, shape[1]//block]
+  x, w, dy, shape, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout)
   op = torch_blocksparse.MatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
   time = bench(lambda: op(x, w), repeat)
-  gflops = 2 * Z * K * layout.sum() * block * block * 1e-9
+  gflops = {'sdd': 2 * Z * K * layout.sum() * block * block * 1e-9,
+            'dsd': 2 * Z * N * layout.sum() * block * block * 1e-9}[mode]
   return gflops / time
 
 @parameterized(
@@ -111,25 +108,19 @@ def bench_op():
   # attention configuration
   batch, heads, hidden = 1, 1, 512
   block, stride, nv, vs = 16, 64, 4, 1
-  ctxs = [512, 1024, 2048, 4096, 8192]
-  # Sparse BERT - SDD
-  perfs = []
-  for ctx in ctxs:
-    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
-    perf = run_bench_mm(batch, heads, ctx, ctx, hidden, 0., 'sdd', False, False, block, torch.float32, layout=layout)
-    perfs.append(perf)
-  ax = f.add_subplot(121)
-  ax.plot([0] + ctxs, [0] + perfs)
-  plt.legend()
-  # Sparse GPT2 - SDD
-  perfs = []
-  for ctx in ctxs:
-    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, True, 4, 1)
-    perf = run_bench_mm(batch, heads, ctx, ctx, hidden, 0., 'sdd', False, False, block, torch.float32, layout=layout)
-    perfs.append(perf)
-  ax = f.add_subplot(122)
-  ax.plot([0] + ctxs, [0] + perfs)
-  plt.legend()
+  ctxs = [512, 1024, 2048, 4096]
+  for idx, mode in enumerate(['sdd', 'dsd']):
+    ax = f.add_subplot(f'12{idx+1}')
+    for is_gpt2 in [False,True]:
+      perfs = []
+      for ctx in ctxs:
+        layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, is_gpt2, 4, 1)
+        M, N, K = {'sdd': (ctx, ctx, hidden),
+                   'dsd': (ctx, hidden, ctx)}[mode]
+        perf = run_bench_mm(batch, heads, M, N, K, 0., mode, False, False, block, torch.float32, layout=layout)
+        perfs.append(perf)
+      ax.plot([0] + ctxs, [0] + perfs, label = 'GPT2' if is_gpt2 else 'BERT')
+    plt.legend()
   plt.show()
 
 
