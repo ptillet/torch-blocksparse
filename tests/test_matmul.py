@@ -103,15 +103,17 @@ def test_op(mode, at, bt, block):
   assert ac_dw
 
 def bench_op(dtype):
+  import numpy as np
   # attention configuration
-  batch, heads, hidden = 1, 1, 512
+  batch, heads, hidden = 1, 4, 512
   block, stride, nv, vs = 16, 64, 4, 1
-  L = [(mode, uni) for mode in ['dsd'] for uni in [False, True]]
-  xs = [512, 1024, 2048, 4096]
+  L = [(mode, uni) for mode in ['sdd'] for uni in [False]]
+  xs = [512, 1024, 2048, 4096, 8192]
   ys = torch.empty((len(xs), len(L)))
   for j, (mode, uni) in enumerate(L):
     for i, x in enumerate(xs):
       layout = torch_blocksparse.MultiheadAttention._make_layout(heads, x//block, 'fixed', stride//block, uni, 4, 1)
+      #np.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
       M, N, K = {'sdd': (x, x, hidden),
                  'dsd': (x, hidden, x)}[mode]
       ys[i, j] = run_bench_mm(batch, heads, M, N, K, 0., mode, False, False, block, dtype, layout=layout)
