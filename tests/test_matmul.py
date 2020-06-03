@@ -79,8 +79,8 @@ def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layou
   x, w, dy, shape, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout)
   op = torch_blocksparse.MatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
   time = bench(lambda: op(x, w), repeat)
-  gflops = {'sdd': 2 * Z * K * layout.sum() * block * block * 1e-9,
-            'dsd': 2 * Z * N * layout.sum() * block * block * 1e-9}[mode]
+  gflops = {'sdd': 2 * Z * K * float(layout.sum()) * block * block * 1e-9,
+            'dsd': 2 * Z * N * float(layout.sum()) * block * block * 1e-9}[mode]
   return gflops / time
 
 @parameterized(
@@ -103,25 +103,21 @@ def test_op(mode, at, bt, block):
   assert ac_dw
 
 def bench_op():
-  import matplotlib.pyplot as plt
-  f = plt.figure(figsize=(8,8))
   # attention configuration
   batch, heads, hidden = 1, 1, 512
+  # sparsity configuration
   block, stride, nv, vs = 16, 64, 4, 1
-  ctxs = [512, 1024, 2048, 4096]
-  for idx, mode in enumerate(['sdd', 'dsd']):
-    ax = f.add_subplot(f'12{idx+1}')
-    for is_gpt2 in [False,True]:
-      perfs = []
-      for ctx in ctxs:
-        layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, is_gpt2, 4, 1)
-        M, N, K = {'sdd': (ctx, ctx, hidden),
-                   'dsd': (ctx, hidden, ctx)}[mode]
-        perf = run_bench_mm(batch, heads, M, N, K, 0., mode, False, False, block, torch.float32, layout=layout)
-        perfs.append(perf)
-      ax.plot([0] + ctxs, [0] + perfs, label = 'GPT2' if is_gpt2 else 'BERT')
-    plt.legend()
-  plt.show()
+  # benchmark
+  L = [(mode, uni) for mode in ['sdd', 'dsd'] for uni in [False, True]]
+  xs = [512, 1024, 2048, 4096]
+  ys = torch.empty((len(xs), len(L)))
+  for j, (mode, uni) in enumerate(L):
+    for i, x in enumerate(xs):
+      layout = torch_blocksparse.MultiheadAttention._make_layout(heads, x//block, 'fixed', stride//block, uni, 4, 1)
+      M, N, K = {'sdd': (x, x, hidden),
+                 'dsd': (x, hidden, x)}[mode]
+      ys[i, j] = run_bench_mm(batch, heads, M, N, K, 0., mode, False, False, block, torch.float32, layout=layout)
+  prettyprint(xs, ys, L, x_name = 'Seq. Length')
 
 
 bench_op()

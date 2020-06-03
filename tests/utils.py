@@ -99,3 +99,13 @@ def make_layout(rho, shape):
 
 def nbytes(x):
   return x.nelement() * x.element_size()
+
+def prettyprint(x, y, L, x_name = ' '):
+  L = [x_name] + list(map(str, L))
+  pad = max([len(x) for x in L]) + 2
+  frmt = (f'{{:>{pad}}}')*len(L)
+  print(frmt.format(*L))
+  for i in range(y.shape[0]):
+    row = [x[i]] + y[i,:].tolist()
+    frmt = f'{{:>{pad}}}' + f'{{:{pad}.4f}}'*(len(L)-1)
+    print(frmt.format(*row))
