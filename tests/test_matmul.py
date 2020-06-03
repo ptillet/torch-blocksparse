@@ -102,7 +102,7 @@ def test_op(mode, at, bt, block):
   assert ac_dx
   assert ac_dw
 
-def bench_op():
+def bench_op(dtype):
   # attention configuration
   batch, heads, hidden = 1, 1, 512
   # sparsity configuration
@@ -116,8 +116,8 @@ def bench_op():
       layout = torch_blocksparse.MultiheadAttention._make_layout(heads, x//block, 'fixed', stride//block, uni, 4, 1)
       M, N, K = {'sdd': (x, x, hidden),
                  'dsd': (x, hidden, x)}[mode]
-      ys[i, j] = run_bench_mm(batch, heads, M, N, K, 0., mode, False, False, block, torch.float32, layout=layout)
+      ys[i, j] = run_bench_mm(batch, heads, M, N, K, 0., mode, False, False, block, dtype, layout=layout)
   prettyprint(xs, ys, L, x_name = 'Seq. Length')
 
 
-bench_op()
+bench_op(torch.float32)
