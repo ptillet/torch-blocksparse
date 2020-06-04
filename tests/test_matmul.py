@@ -42,7 +42,7 @@ def run_mm_triton(x, w, mode, trans_a, trans_b, layout, block, dy):
   return y, dx, dw
 
 @nottest
-def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
+def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout):
   torch.manual_seed(1)
   AS0 = K if trans_a else M
   AS1 = M if trans_a else K
@@ -51,17 +51,22 @@ def init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   shape = {'sdd': (M, N),
            'dsd': (AS0, AS1),
            'dds': (BS0, BS1)}[mode]
-  layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
-  x = torch.rand((Z, H, AS0, AS1), dtype=torch.float32, requires_grad=True).cuda()
-  w = torch.rand((Z, H, BS0, BS1), dtype=torch.float32, requires_grad=True).cuda()
-  dy = torch.rand((Z, H, M, N), dtype=torch.float32).cuda()
+  x = torch.rand((Z, H, AS0, AS1), dtype=dtype, requires_grad=True, device='cuda')
+  w = torch.rand((Z, H, BS0, BS1), dtype=dtype, requires_grad=True, device='cuda')
+  #x = mempad(x, (Z, H, AS0, AS1), (AS1*AS0*H, AS1*AS0, AS1, 1))
+  #w = mempad(w, (Z, H, BS0, BS1), (BS1*BS0*H, BS1*BS0, BS1, 1))
+  dy = torch.rand((Z, H, M, N), dtype=dtype, device='cuda')
+  if layout is None:
+    layout = make_layout(rho, (H, shape[0]//block, shape[1]//block))
+  else:
+    assert list(layout.shape) == [H, shape[0]//block, shape[1]//block]
   x.retain_grad()
   w.retain_grad()
-  return x, w, dy, layout
+  return x, w, dy, shape, layout
 
 @nottest
-def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
-  x, w, dy, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
+def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout = None):
+  x, w, dy, shape, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout)
   ry, rdx, rdw = run_mm_reference(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   ty, tdx, tdw = run_mm_triton(x.clone(), w.clone(), mode, trans_a, trans_b, layout, block, dy)
   ac_y = allclose(ry, ty)
@@ -70,12 +75,14 @@ def run_test_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype):
   return ac_y, ac_dx, ac_dw
 
 @nottest
-def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, repeat=10):
-  x, w, dy, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype)
+def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout = None, repeat=10):
+  x, w, dy, shape, layout = init_inputs(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layout)
   op = torch_blocksparse.MatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
   time = bench(lambda: op(x, w), repeat)
-  flops = 2 * Z * layout.sum() * block * block
-  return time
+  gflops = {'sdd': 2 * Z * K * float(layout.sum()) * block * block * 1e-9,
+            'dsd': 2 * Z * N * float(layout.sum()) * block * block * 1e-9,
+            'dds': 2 * Z * M * float(layout.sum()) * block * block * 1e-9}[mode]
+  return gflops / time
 
 @parameterized(
     [
@@ -96,5 +103,24 @@ def test_op(mode, at, bt, block):
   assert ac_dx
   assert ac_dw
 
-def bench_op(mode, at, bt, block):
-  run_bench_mm(3, 2, 256, 512, 384, 0.5, 'sdd', at, bt, block, torch.float32)
+def bench_op(dtype):
+  import numpy as np
+  # attention configuration
+  batch, heads, hidden = 1, 12, 512
+  block, stride, nv, vs = 16, 64, 4, 1
+  L = [(mode, uni) for mode in ['sdd', 'dsd', 'dds'] for uni in [False, True]]
+  xs = [512, 1024, 2048, 4096, 8192, 16384]
+  ys = torch.empty((len(xs), len(L)))
+  for j, (mode, uni) in enumerate(L):
+    for i, x in enumerate(xs):
+      import time
+      layout = torch_blocksparse.MultiheadAttention._make_layout(heads, x//block, 'fixed', stride//block, uni, 4, 1)
+      #np.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
+      M, N, K = {'sdd': (x, x, hidden),
+                 'dsd': (x, hidden, x),
+                 'dds': (hidden, x, x)}[mode]
+      ys[i, j] = run_bench_mm(batch, heads, M, N, K, 0., mode, False, False, block, dtype, layout=layout)
+  prettyprint(xs, ys, L, x_name = 'Seq. Length')
+
+
+#bench_op(torch.float16)

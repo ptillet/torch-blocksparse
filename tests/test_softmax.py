@@ -35,8 +35,9 @@ def run_softmax_reference(x, scale, dx, kp_mask, attn_mask, layout, block):
 
 
 @nottest
-def init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x = True):
-  layout = make_layout(rho, (H, M//block, N//block))
+def init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x = True, layout = None):
+  if layout is None:
+    layout = make_layout(rho, (H, M//block, N//block))
   if dense_x:
     x = torch.rand((Z, H, M, N), dtype=dtype, requires_grad=True, device='cuda')
   else:
@@ -49,8 +50,8 @@ def init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x = True):
   return layout, x, dx, bool_attn_mask, fp_attn_mask, kp_mask
 
 @nottest
-def run_test_softmax(Z, H, M, N, scale, rho, block, dtype):
-  layout, x, dx, bool_attn_mask, fp_attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype)
+def run_test_softmax(Z, H, M, N, scale, rho, block, dtype, layout = None):
+  layout, x, dx, bool_attn_mask, fp_attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype, layout=layout)
   ry, rdx = run_softmax_reference(x, scale, dx, kp_mask, bool_attn_mask, layout, block)
   ty, tdx = run_softmax_triton(x, scale, dx, kp_mask, fp_attn_mask, layout, block)
   ac_y  = allclose(ry, ty)
@@ -58,8 +59,8 @@ def run_test_softmax(Z, H, M, N, scale, rho, block, dtype):
   return ac_y, ac_dx
 
 @nottest
-def run_bench_softmax(Z, H, M, N, scale, rho, block, dtype, repeat=10):
-  layout, x, dx, _, attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x=False)
+def run_bench_softmax(Z, H, M, N, scale, rho, block, dtype, layout = None, repeat=10):
+  layout, x, dx, _, attn_mask, kp_mask = init_inputs(Z, H, M, N, scale, rho, block, dtype, dense_x=False, layout=layout)
   x = x.clone()
   dx = dx.clone()
   # forward function
@@ -72,7 +73,7 @@ def run_bench_softmax(Z, H, M, N, scale, rho, block, dtype, repeat=10):
   # benchmark
   time_y  = bench(lambda: sparse_softmax(x, scale, None, None, 'add', 'mul'), repeat)
   time_dx = bench(lambda: backward(dx), repeat)
-  gb_y  = 2*nbytes(x)*1e-9
+  gb_y  = (2*nbytes(x) + nbytes(attn_mask) + nbytes(kp_mask))*1e-9
   gb_dx = 3*nbytes(x)*1e-9
   return time_y, time_dx, gb_y, gb_dx
 
@@ -88,31 +89,42 @@ def test_op(block, dtype):
   assert ac_dx
 
 def bench_op():
-  import matplotlib.pyplot as plt
-  f = plt.figure(figsize=(8,8))
-  # vary reduction size
-  perf_y, perf_dx = [], []
-  reduction = [256*i for i in range(1,13)]
-  for N in reduction:
-    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, 256, N, 0.4, 0., 16, torch.float32)
-    perf_y.append(gb_y/time_y)
-    perf_dx.append(gb_dx/time_dx)  
-  ax = f.add_subplot(211)
-  ax.plot([0] + reduction, [0] + perf_y, label='forward')
-  ax.plot([0] + reduction, [0] + perf_dx, label='backward')
-  plt.legend()
-  # vary number of rows
-  rows = [32*i for i in range(1,16)]
-  perf_y, perf_dx = [], []
-  for M in rows:
-    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, M, 512, 0.4, 0., 16, torch.float32)
-    perf_y.append(gb_y/time_y)
-    perf_dx.append(gb_dx/time_dx)
-  ax = f.add_subplot(212)
-  ax.plot([0] + rows, [0] + perf_y, label='forward')
-  ax.plot([0] + rows, [0] + perf_dx, label='backward')
-  plt.legend()
-  plt.show()
+  L = ['Forward', 'Backward']
+  # Vary number of columns
+  xs = [256*i for i in range(1,13)]
+  ys = torch.empty((len(xs), len(L)))
+  for i, N in enumerate(xs):
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, 256, N, 0.4, 0., 16, torch.float16)
+    ys[i, 0] = gb_y  / time_y
+    ys[i, 1] = gb_dx / time_dx
+  prettyprint(xs, ys, L, '# Columns')
+  # Vary number of rows
+  xs = [32*i for i in range(1,16)]
+  ys = torch.empty((len(xs), len(L)))
+  for i, M in enumerate(xs):
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(2, 4, M, 512, 0.4, 0., 16, torch.float16)
+    ys[i, 0] = gb_y  / time_y
+    ys[i, 1] = gb_dx / time_dx
+  prettyprint(xs, ys, L, '# Rows')
+  # Sparse GPT2
+  batch, heads = 1, 1
+  block, stride, nv, vs = 64, 64, 4, 1
+  xs = [1024, 2048, 4096, 8192]
+  ys = torch.empty((len(xs), len(L)))
+  for i, ctx in enumerate(xs):
+    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, True, 4, 1)
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(batch, heads, ctx, ctx, 0., 0., block, torch.float16, layout=layout)
+    ys[i, 0] = gb_y  / time_y
+    ys[i, 1] = gb_dx / time_dx
+  prettyprint(xs, ys, L, 'Seq. Length')
+  # Sparse BERT
+  ys = torch.empty((len(xs), len(L)))
+  for i, ctx in enumerate(xs):
+    layout = torch_blocksparse.MultiheadAttention._make_layout(heads, ctx//block, 'fixed', stride//block, False, 4, 1)
+    time_y, time_dx, gb_y, gb_dx = run_bench_softmax(batch, heads, ctx, ctx, 0., 0., block, torch.float16, layout=layout)
+    ys[i, 0] = gb_y  / time_y
+    ys[i, 1] = gb_dx / time_dx
+  prettyprint(xs, ys, L, 'Seq. Length')
 
 
-
+#bench_op()

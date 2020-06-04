@@ -4,10 +4,16 @@ import math
 
 fwd_kernels = dict()
 fwd_src = '''
-__global__ void softmax_fwd(TYPE *X, float scale,
-                            int *LUT, TYPE *KP_M, TYPE *ATTN_M,
-                            int num_blocks, int sizemax, 
-                            long stride_zx, int stride_zkpm, int stride_zattnm){ 
+__global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16), 
+                            float scale,
+                            int *LUT __readonly __noalias __aligned(16), 
+                            TYPE *KP_M __readonly __noalias __aligned(16), 
+                            TYPE *ATTN_M __readonly __noalias __aligned(16),
+                            int num_blocks, 
+                            int sizemax, 
+                            long stride_zx __multipleof(BLOCK), 
+                            int stride_zkpm __multipleof(BLOCK), 
+                            int stride_zattnm __multipleof(BLOCK)){ 
   int pidhm = get_program_id(0);
   int pidz = get_program_id(1);
 
@@ -26,20 +32,9 @@ __global__ void softmax_fwd(TYPE *X, float scale,
   int   rbmn[TN] = check ? rbn : size - 1;
 
   // block id and column id
-  long blockid [TN]  = *(LUT + offset + rbmn);
-  long columnid[TN]  = *(LUT + offset + rbmn + num_blocks);
-  long rowid   [TN]  = *(LUT + offset + rbmn + num_blocks*2);
-
-  // pointers to key padding mask
-  TYPE* pkp_m[TN]  = KP_M + pidz * stride_zkpm 
-                              + columnid * BLOCK
-                              + rxn;
-
-  // pointers to attention mask
-  TYPE* pattn_m[TN] = ATTN_M + columnid * BLOCK 
-                                 + rowid * BLOCK * stride_zattnm
-                                 + rxm * stride_zattnm
-                                 + rxn;
+  long blockid [TN]  = *(LUT + offset + rbmn*3 + 0);
+  long columnid[TN]  = *(LUT + offset + rbmn*3 + 1);
+  long rowid   [TN]  = *(LUT + offset + rbmn*3 + 2);
 
   // pointers to X
   TYPE* px[TN]  = X + pidz * stride_zx
@@ -47,6 +42,18 @@ __global__ void softmax_fwd(TYPE *X, float scale,
                     + rxm * BLOCK 
                     + rxn;
 
+  // pointers to key padding mask
+  TYPE* pkp_m[TN]  = KP_M + pidz * stride_zkpm 
+                          + columnid * BLOCK
+                          + rxn;
+
+  // pointers to attention mask
+  TYPE* pattn_m[TN] = ATTN_M + columnid * BLOCK 
+                             + rowid * BLOCK * stride_zattnm
+                             + rxm * stride_zattnm
+                             + rxn;
+
+ 
   // load  input
   TYPE x[TN] =  check ? *px : -INFINITY;
   // load key-padding mask
@@ -83,9 +90,13 @@ __global__ void softmax_fwd(TYPE *X, float scale,
 bwd_kernels = dict()
 bwd_src = '''
 
-__global__ void softmax_bwd(TYPE * X, float scale,
-                            TYPE* DX, int* LUT,
-                            int sizemax, long stride_zx, long stride_zdx) {
+__global__ void softmax_bwd(TYPE * X __readonly __noalias __aligned(16), 
+                            float scale,
+                            TYPE* DX __readonly __noalias __aligned(16), 
+                            int* LUT,
+                            int sizemax, 
+                            long stride_zx __multipleof(BLOCK), 
+                            long stride_zdx __multipleof(BLOCK)) {
     int pidhm = get_program_id(0);
     int pidz = get_program_id(1);
 
@@ -105,7 +116,7 @@ __global__ void softmax_bwd(TYPE * X, float scale,
     int rbmn[TN] = check ? rbn : size - 1;
 
     // initialize pointers to block-sparse input
-    long blockid[TN] = *(LUT + offset + rbmn);
+    long blockid[TN] = *(LUT + offset + rbmn*3);
 
     TYPE* px[TN] = X + pidz * stride_zx
                          + blockid * BLOCK * BLOCK
@@ -120,9 +131,12 @@ __global__ void softmax_bwd(TYPE * X, float scale,
     // compute fused softmax backward
     TYPE x[TN] = check ? *px : 0;
     TYPE dx[TN] = check ? *pdx : 0;
-    TYPE xdx[TN] = x * dx;
-    TYPE xdxsum = (check ? xdx : 0)[+];
-    TYPE y[TN] = x * (dx - xdxsum) * scale;
+    float Fdx[TN] = dx;
+    float Fx[TN] = x;
+    float Fxdx[TN] = Fdx*Fx;
+    float Fxdxsum = Fxdx[+];
+    float Fy[TN] = Fx * (Fdx - Fxdxsum) * scale;
+    TYPE y[TN] = Fy;
 
     // write-back
     *? (check)pdx = y;
@@ -145,14 +159,13 @@ class _sparse_softmax(torch.autograd.Function):
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
         # block indices
         idx = torch.arange(layout.sum())
-        # rows
         rows = layout.nonzero()[:, 1]
-        # columns
         columns = layout.nonzero()[:, 2]
+        core   = torch.stack((idx, columns, rows), dim=1).view(-1)
         # construct look-up table
-        offsets += 2*sizes.numel()
+        offsets = offsets*3 + 2*sizes.numel()
         header = torch.stack((sizes, offsets), dim=1).view(-1)
-        lut = torch.cat((header, idx, columns, rows)).type(torch.int32).cuda()
+        lut = torch.cat((header, core)).type(torch.int32).cuda()
         return lut, int(sizes.max())
 
     @staticmethod
@@ -161,9 +174,9 @@ class _sparse_softmax(torch.autograd.Function):
           raise NotImplementedError('Reductions larger than 32768 elements '\
                                     'are not yet implemented')
         TN = (int(max_k) + 127)//128 * 128
-        num_warps = 4 if max_k < 512 else (8 if max_k < 1768 else 16)
+        num_warps = 4 if max_k < 512 else (8 if max_k < 2048 else 16)
         # just-in-time compile kernel
-        key = (block, dtype, TN, num_warps, kp_mask_mode, attn_mask_mode)
+        key = (block, dtype, num_warps, TN, kp_mask_mode, attn_mask_mode)
         if key not in cache:
             defines = {'TM': [1], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
                        'INFINITY': {torch.float32: 'F32_INFINITY',

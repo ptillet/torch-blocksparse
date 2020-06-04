@@ -186,36 +186,6 @@ def multi_head_attention_forward(query,                           # type: Tensor
                                                dtype=key_padding_mask.dtype,
                                                device=key_padding_mask.device)], dim=1)
 
-    # attn_output_weights = torch.bmm(q, k.transpose(1, 2))
-    # assert list(attn_output_weights.size()) == [bsz * num_heads, tgt_len, src_len]
-
-    # if attn_mask is not None:
-    #     attn_mask = attn_mask.unsqueeze(0)
-    #     attn_output_weights += attn_mask
-
-    # if key_padding_mask is not None:
-    #     attn_output_weights = attn_output_weights.view(bsz, num_heads, tgt_len, src_len)
-    #     attn_output_weights = attn_output_weights.masked_fill(
-    #         key_padding_mask.unsqueeze(1).unsqueeze(2),
-    #         float('-inf'),
-    #     )
-    #     attn_output_weights = attn_output_weights.view(bsz * num_heads, tgt_len, src_len)
-
-    # attn_output_weights = softmax(
-    #     attn_output_weights, dim=-1)
-    # attn_output_weights = dropout(attn_output_weights, p=dropout_p, training=training)
-
-    # attn_output = torch.bmm(attn_output_weights, v)
-    # assert list(attn_output.size()) == [bsz * num_heads, tgt_len, head_dim]
-    # attn_output = attn_output.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
-    # attn_output = linear(attn_output, out_proj_weight, out_proj_bias)
-    # if need_weights:
-    #     # average attention weights over heads
-    #     attn_output_weights = attn_output_weights.view(bsz, num_heads, tgt_len, src_len)
-    #     return attn_output, attn_output_weights.sum(dim=1) / num_heads
-    # else:
-    #     return attn_output, None
-
     q = q.view(bsz, num_heads, q.shape[1], q.shape[2])
     k = k.view(bsz, num_heads, k.shape[1], k.shape[2])
     v = v.view(bsz, num_heads, v.shape[1], v.shape[2])
@@ -231,6 +201,38 @@ def multi_head_attention_forward(query,                           # type: Tensor
     return attn_output, None
 
 
+_make_layout_src = '''
+  torch::Tensor make_layout(int num_heads, int num_blocks, const std::string& mode, 
+                            int block_stride, bool unidirectional, int numverts, int vertsize) {
+    std::vector<long> shape = {{num_heads, num_blocks, num_blocks}};
+    if(mode == "dense")
+      return torch::ones(shape, torch::kLong);
+    torch::Tensor ret = torch::zeros(shape, torch::kLong);
+    auto _ret  = ret.accessor<long, 3>();
+    for(int h = 0; h < num_heads; h++){
+      // set first part of layout
+      for(int i = 0; i < num_blocks; i+= block_stride)
+      for(int j = i; j < i + block_stride; j++)
+      for(int k = i; k < (unidirectional ? j+1 : i + block_stride); k++)
+        _ret[h][j][k] = 1;
+
+      // set second part of layout
+      int start = block_stride - (1 + h % numverts) * vertsize;
+      for(int i = 0; i < num_blocks; i++){
+        int end = unidirectional ? i : num_blocks;
+        for(int j = start; j < end; j+= block_stride)
+        for(int k = j; k < j + vertsize; k += num_blocks)
+          _ret[h][i][k] = 1;
+      }
+    }
+    return ret;
+  }
+'''
+
+make_layout = torch.utils.cpp_extension.load_inline(name='make_layout', 
+                                                    cpp_sources=[_make_layout_src], 
+                                                    functions=['make_layout'],
+                                                    extra_cflags=['-O2']).make_layout
 
 class MultiheadAttention(nn.modules.activation.MultiheadAttention):
 
@@ -255,7 +257,7 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
         return layout
 
     @staticmethod
-    def _make_layout(num_heads, num_blocks, mode, block_stride, unidirectional, numverts, vertsize):
+    def _make_layout_python(num_heads, num_blocks, mode, block_stride, unidirectional, numverts, vertsize):
         layout = torch.zeros((num_heads, num_blocks, num_blocks), dtype=torch.int64)
         if mode == "dense":
             layout[:, :, :] = 1
@@ -264,6 +266,11 @@ class MultiheadAttention(nn.modules.activation.MultiheadAttention):
                 layout = MultiheadAttention._set_s1_layout(layout, i, num_blocks, block_stride, unidirectional)
                 layout = MultiheadAttention._set_s2_layout(layout, i, num_blocks, block_stride, unidirectional, numverts, vertsize)
         return layout
+
+
+    @staticmethod
+    def _make_layout(num_heads, num_blocks, mode, block_stride, unidirectional, numverts, vertsize):
+        return make_layout(num_heads, num_blocks, mode, block_stride, unidirectional, numverts, vertsize)
 
     class SparsityInfo:
 
