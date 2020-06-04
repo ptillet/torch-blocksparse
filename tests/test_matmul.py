@@ -80,7 +80,8 @@ def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layou
   op = torch_blocksparse.MatMul(layout, block, mode, trans_a=trans_a, trans_b=trans_b)
   time = bench(lambda: op(x, w), repeat)
   gflops = {'sdd': 2 * Z * K * float(layout.sum()) * block * block * 1e-9,
-            'dsd': 2 * Z * N * float(layout.sum()) * block * block * 1e-9}[mode]
+            'dsd': 2 * Z * N * float(layout.sum()) * block * block * 1e-9,
+            'dds': 2 * Z * M * float(layout.sum()) * block * block * 1e-9}[mode]
   return gflops / time
 
 @parameterized(
@@ -105,19 +106,21 @@ def test_op(mode, at, bt, block):
 def bench_op(dtype):
   import numpy as np
   # attention configuration
-  batch, heads, hidden = 1, 4, 512
+  batch, heads, hidden = 1, 12, 512
   block, stride, nv, vs = 16, 64, 4, 1
-  L = [(mode, uni) for mode in ['sdd', 'dsd'] for uni in [False, True]]
-  xs = [512, 1024, 2048, 4096, 8192]
+  L = [(mode, uni) for mode in ['sdd', 'dsd', 'dds'] for uni in [False, True]]
+  xs = [512, 1024, 2048, 4096, 8192, 16384]
   ys = torch.empty((len(xs), len(L)))
   for j, (mode, uni) in enumerate(L):
     for i, x in enumerate(xs):
+      import time
       layout = torch_blocksparse.MultiheadAttention._make_layout(heads, x//block, 'fixed', stride//block, uni, 4, 1)
       #np.savetxt('layout.csv', layout[0,:,:].cpu().numpy(), fmt='%d')
       M, N, K = {'sdd': (x, x, hidden),
-                 'dsd': (x, hidden, x)}[mode]
+                 'dsd': (x, hidden, x),
+                 'dds': (hidden, x, x)}[mode]
       ys[i, j] = run_bench_mm(batch, heads, M, N, K, 0., mode, False, False, block, dtype, layout=layout)
   prettyprint(xs, ys, L, x_name = 'Seq. Length')
 
 
-bench_op(torch.float32)
+bench_op(torch.float16)

@@ -102,8 +102,8 @@ src = '''
     // initialize a, b pointers
     int rka[TK] = offka + 0 ... TK;
     int rkb[TK] = offkb + 0 ... TK;
-    TYPE* pa[TM, TK] = A + offpa + pidz * stride_za + offha * stride_ha + ram[:, newaxis] * STRIDE_AM + rka[newaxis, :] * STRIDE_AK;
-    TYPE* pb[TK, TN] = B + offpb + pidz * stride_zb + offhb * stride_hb + rbn[newaxis, :] * STRIDE_BN + rkb[:, newaxis] * STRIDE_BK;
+    TYPE* pa[TM, TK] = A + pidz * stride_za + offha * stride_ha + offpa + ram[:, newaxis] * STRIDE_AM + rka[newaxis, :] * STRIDE_AK;
+    TYPE* pb[TK, TN] = B + pidz * stride_zb + offhb * stride_hb + offpb + rbn[newaxis, :] * STRIDE_BN + rkb[:, newaxis] * STRIDE_BK;
     // pre-fetch
 #ifdef DDS
     bool checkam[TM, TK] = ram[:, newaxis] < DS0;
@@ -583,7 +583,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
     # kernel
     key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c)
     if key not in _sparse_matmul.dds_cache:
-      TM = [64, 128] if dtype == torch.float32 else [64, 128]
+      TM = [64, 128] if dtype == torch.float32 else [64, 128, 256]
       TK = [8]       if dtype == torch.float32 else [16]
       defines = {'TM': TM, 'TN': block, 'TK': TK, 
                  'BLOCK': block,
@@ -630,7 +630,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
     # kernel
     key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c)
     if key not in _sparse_matmul.dsd_cache:
-      TN = [64, 128] if dtype == torch.float32 else [64, 128]
+      TN = [64, 128] if dtype == torch.float32 else [64, 128, 256]
       TK = [8]       if dtype == torch.float32 else [16]
       defines = {'TM': block, 'TN': TN, 'TK': TK, 
                  'BLOCK': block,
