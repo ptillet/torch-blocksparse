@@ -74,7 +74,8 @@ src = '''
     // sparse input offset
     int offma = 0;
     int offka = 0;
-    int offpa __multipleof(8) = *(pinc + 1);
+    long offpa __multipleof(8) = *(pinc + 1);
+    offpa = offpa * BLOCK * BLOCK;
     int offha = 0;
     int offhb = depth;
 #endif
@@ -90,7 +91,8 @@ src = '''
     // sparse input offset
     int offnb = 0;
     int offkb = 0;
-    int offpb __multipleof(8) = *(pinc + 1);
+    long offpb __multipleof(8) = *(pinc + 1);
+    offpb = offpb * BLOCK * BLOCK;
     int offha = depth;
     int offhb = 0;
 #endif
@@ -538,9 +540,9 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
         layoutw[layoutw > 0] = 1 + torch.arange(msum)
         widx = torch.cat((widx, current_offset + layoutw.T[layoutw.T > 0] - 1))
         current_offset += msum
-    widx = widx * block * block
-    wincs = widx.clone()
-    wincs[1:] -= widx[:-1]
+    widx = widx
+    wincs = widx*block*block
+    wincs[1:] -= widx[:-1]*block*block
     wincs = wincs.view(-1, 1).repeat(1, div)
     if trans:
       wincs[:, 1:] = step
@@ -584,6 +586,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
       TM = [64, 128] if dtype == torch.float32 else [64, 128]
       TK = [8]       if dtype == torch.float32 else [16]
       defines = {'TM': TM, 'TN': block, 'TK': TK, 
+                 'BLOCK': block,
                  'TYPE': dtype,
                  'STRIDE_AM': 1 if trans_a else 'lda',
                  'STRIDE_AK': 'lda' if trans_a else 1,
@@ -630,6 +633,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
       TN = [64, 128] if dtype == torch.float32 else [64, 128]
       TK = [8]       if dtype == torch.float32 else [16]
       defines = {'TM': block, 'TN': TN, 'TK': TK, 
+                 'BLOCK': block,
                  'TYPE': dtype,
                  'STRIDE_AM': 1 if trans_a else block, 
                  'STRIDE_AK': block if trans_a else 1,
