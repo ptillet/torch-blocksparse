@@ -399,12 +399,8 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
 
   @staticmethod
   def make_sdd_lut(layout, block, dtype):
-    from time import time
-    start = time()
     start_width = 64 // block
     segmented = _sparse_matmul.sdd_segment(layout.type(torch.int32), start_width)
-    end = time()
-    print(end - start)
     luts, widths, packs = [], [], []
     for size, nnz in segmented:
       width = nnz.shape[0] // (size*size)

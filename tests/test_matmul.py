@@ -107,7 +107,7 @@ def bench_op(dtype):
   # attention configuration
   batch, heads, hidden = 1, 4, 512
   block, stride, nv, vs = 16, 64, 4, 1
-  L = [(mode, uni) for mode in ['sdd'] for uni in [False]]
+  L = [(mode, uni) for mode in ['sdd', 'dsd'] for uni in [False, True]]
   xs = [512, 1024, 2048, 4096, 8192]
   ys = torch.empty((len(xs), len(L)))
   for j, (mode, uni) in enumerate(L):
