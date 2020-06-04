@@ -127,4 +127,4 @@ def bench_op():
   prettyprint(xs, ys, L, 'Seq. Length')
 
 
-bench_op()
+#bench_op()

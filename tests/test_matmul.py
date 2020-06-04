@@ -123,4 +123,4 @@ def bench_op(dtype):
   prettyprint(xs, ys, L, x_name = 'Seq. Length')
 
 
-bench_op(torch.float16)
+#bench_op(torch.float16)
