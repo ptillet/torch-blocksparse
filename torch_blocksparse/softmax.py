@@ -170,15 +170,24 @@ class _sparse_softmax(torch.autograd.Function):
 
     @staticmethod
     def make_kernel(cache, src, max_k, dtype, block, kp_mask_mode, attn_mask_mode):
-        if max_k >= 32768:
+        # pad tile to cover the entire reduction
+        params = {16384: (1, 32768, 16),
+                  8192:  (1, 16384, 16),
+                  4096:  (1, 8192, 16),
+                  2048:  (1, 4096, 16),
+                  1024:  (1, 2048, 16),
+                  512:   (1, 1024, 8),
+                  256:   (1, 512, 4),
+                  128:   (1, 256, 4)}
+        bound = max(128, 2**int(math.log2(max_k-1)))
+        if bound not in params:
           raise NotImplementedError('Reductions larger than 32768 elements '\
                                     'are not yet implemented')
-        TN = (int(max_k) + 127)//128 * 128
-        num_warps = 4 if max_k < 512 else (8 if max_k < 2048 else 16)
+        TM, TN, num_warps = params[bound]
         # just-in-time compile kernel
-        key = (block, dtype, num_warps, TN, kp_mask_mode, attn_mask_mode)
+        key = (block, dtype, TM, TN, num_warps, kp_mask_mode, attn_mask_mode)
         if key not in cache:
-            defines = {'TM': [1], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
+            defines = {'TM': [TM], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
                        'INFINITY': {torch.float32: 'F32_INFINITY',
                                     torch.float16: 'F16_INFINITY'}[dtype]}
             if kp_mask_mode == 'mul':
