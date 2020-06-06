@@ -69,7 +69,7 @@ src = '''
     int offpc = 0;
     // dense input offset
     int offnb = pid1 * TN;
-    long offkb __multipleof(8) = *pinc;
+    int offkb __multipleof(8) = *pinc;
     int offpb = 0;
     // sparse input offset
     int offma = 0;
@@ -435,24 +435,24 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
     dtype = a.dtype
     # create kernel
     total_width = sum([width*pack*pack for width,pack in zip(widths, packs)])
-    c = torch.zeros((AS0, total_width, block, block), dtype=dtype, device=a.device)
+    c = torch.empty((AS0, total_width, block, block), dtype=dtype, device=a.device)
     for lut, width, pack in zip(luts, widths, packs):
       num_lock = 1
       key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack)
       if key not in _sparse_matmul.sdd_cache:
-        TK = {(torch.float16, 16) : [16, 32], (torch.float32, 16 ): [8, 16],
-              (torch.float16, 32) : [16, 32], (torch.float32, 32 ): [8, 16],
-              (torch.float16, 64) : [16],        (torch.float32, 64 ): [8],
-              (torch.float16, 128): [16],        (torch.float32, 128): [8]}[(dtype, block*pack)]
-        defines =  {'BLOCK': block, 'TM': block*pack, 'TN': block*pack, 'TK': TK, 'TYPE': dtype,
-                    'STRIDE_AM': '1'    if trans_a else 'lda', 
-                    'STRIDE_AK': 'lda'  if trans_a else '1',
-                    'STRIDE_BN': 'ldb'  if trans_b else '1', 
-                    'STRIDE_BK': '1'    if trans_b else 'ldb',
-                    'STRIDE_CM': block, 
-                    'STRIDE_CN': '1',
-                    'SDD': True, 'TZ': 1, 'NAME': 'sdd_kernel'}
-        _sparse_matmul.sdd_cache[key] = triton.kernel(src, defines=defines, num_warps=[4])
+        TK = {torch.float32: [8, 16],
+              torch.float16: [16, 32, 64]}[dtype]
+        defines =  {'TM': block*pack, 'TN': block*pack, 'TMN': block*block*pack*pack, 'BLOCK': block, 
+                  'TK': TK, 'TYPE': dtype,
+                  'STRIDE_AM': '1'    if trans_a else 'lda', 
+                  'STRIDE_AK': 'lda'  if trans_a else '1',
+                  'STRIDE_BN': 'ldb'  if trans_b else '1', 
+                  'STRIDE_BK': '1'    if trans_b else 'ldb',
+                  'STRIDE_CM': 'ldc', 
+                  'STRIDE_CN': '1',
+                  'SDD': True, 'TZ': 1, 'NAME': 'sdd_kernel'}
+        _sparse_matmul.sdd_cache[key] = triton.kernel(src, defines=defines, num_warps=[1, 2, 4])
+
       kernel = _sparse_matmul.sdd_cache[key]
       # create output
       locks = _sparse_matmul.get_locks(2*width*AS0*num_lock)

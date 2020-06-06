@@ -79,12 +79,13 @@ def run_bench_softmax(Z, H, M, N, scale, rho, block, dtype, layout = None, repea
 
 @parameterized(
   [
-    (block, dtype) for block in [16, 32, 64]\
-                   for dtype in [torch.float16, torch.float32]
+    (block, width, dtype) for block in [16]\
+                          for dtype in [torch.float16, torch.float32]\
+                          for width in [256, 576]
   ]
 )
-def test_op(block, dtype):
-  ac_y, ac_dx = run_test_softmax(2, 4, 128, 128, 0.5, 0.4, block, dtype)
+def test_op(block, width, dtype):
+  ac_y, ac_dx = run_test_softmax(2, 4, width, width, 0.4, 0.4, block, dtype)
   assert ac_y
   assert ac_dx
 

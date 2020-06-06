@@ -108,10 +108,10 @@ def bench_op(dtype):
   # attention configuration
   batch, heads, hidden = 1, 12, 512
   block, stride, nv, vs = 16, 64, 4, 1
-  L = [(mode, uni) for mode in ['sdd', 'dsd', 'dds'] for uni in [False, True]]
-  xs = [512, 1024, 2048, 4096, 8192, 16384]
+  L = [(mode, uni, at, bt) for mode in ['dds'] for uni in [False] for at in [False] for bt in [False]]
+  xs = [4096]
   ys = torch.empty((len(xs), len(L)))
-  for j, (mode, uni) in enumerate(L):
+  for j, (mode, uni, at, bt) in enumerate(L):
     for i, x in enumerate(xs):
       import time
       layout = torch_blocksparse.MultiheadAttention._make_layout(heads, x//block, 'fixed', stride//block, uni, 4, 1)
@@ -119,8 +119,8 @@ def bench_op(dtype):
       M, N, K = {'sdd': (x, x, hidden),
                  'dsd': (x, hidden, x),
                  'dds': (hidden, x, x)}[mode]
-      ys[i, j] = run_bench_mm(batch, heads, M, N, K, 0., mode, False, False, block, dtype, layout=layout)
+      ys[i, j] = run_bench_mm(batch, heads, M, N, K, 0., mode, at, bt, block, dtype, layout=layout)
   prettyprint(xs, ys, L, x_name = 'Seq. Length')
 
 
-#bench_op(torch.float16)
+bench_op(torch.float16)
