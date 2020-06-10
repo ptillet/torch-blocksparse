@@ -39,46 +39,40 @@ class DeepSpeedSparseSelfAttention(nn.Module):
                 layout = DeepSpeedSparseSelfAttention._set_s2_layout(layout, i, num_blocks, block_stride, unidirectional, numverts, vertsize)
         return layout
 
-    class SparsityInfo:
-
-        def __init__(self, mode = None,
-                     block = None, stride=128,
-                     unidirectional = None, numverts = 1, vertsize = 1):
-            self.mode = mode
-            self.block = block
-            self.stride = stride
-            self.unidirectional = unidirectional
-            self.numverts = numverts
-            self.vertsize = vertsize
-
     ops = dict()
 
     # add to cache
     def get_ops(self, L):
         import sys
         if L not in DeepSpeedSparseSelfAttention.ops:
-            sparsity = self.sparsity
-            layout = DeepSpeedSparseSelfAttention._make_layout(self.num_heads, L // sparsity.block, sparsity.mode,
-                                                    sparsity.stride // sparsity.block, sparsity.unidirectional,
-                                                    sparsity.numverts, sparsity.vertsize)
-            sparse_dot_sdd_nt = torch_blocksparse.MatMul(layout, sparsity.block, 'sdd',
+            layout = DeepSpeedSparseSelfAttention._make_layout(self.num_heads, L // self.block, self.mode,
+                                                    self.stride // self.block, self.unidirectional,
+                                                    self.numverts, self.vertsize)
+            sparse_dot_sdd_nt = torch_blocksparse.MatMul(layout, self.block, 'sdd',
                                                                trans_a=False, trans_b=True)
-            sparse_dot_dsd_nn = torch_blocksparse.MatMul(layout, sparsity.block, 'dsd',
+            sparse_dot_dsd_nn = torch_blocksparse.MatMul(layout, self.block, 'dsd',
                                                                trans_a=False, trans_b=False)
-            sparse_softmax = torch_blocksparse.Softmax(layout, sparsity.block)
+            sparse_softmax = torch_blocksparse.Softmax(layout, self.block)
             DeepSpeedSparseSelfAttention.ops[L] = (sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax)
         return DeepSpeedSparseSelfAttention.ops[L]
 
     # constructor
     def __init__(self, embed_dim, num_heads, key_padding_mask_mode='add', attn_mask_mode='mul',
-            sparsity_mode='fixed', block=16, stride=64, unidirectional=False, numverts=1, vertsize=1):
+            mode='fixed', block=16, stride=64, unidirectional=False, numverts=1, vertsize=1):
         super().__init__()
 
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.sparsity = SparsityInfo(mode=sparsity_mode, block, stride, unidirectional, numverts, vertsize)
         self.key_padding_mask_mode = key_padding_mask_mode
         self.attn_mask_mode = attn_mask_mode
+        # Sparsity Information
+        self.mode = mode
+        self.block = block
+        self.stride = stride
+        self.unidirectional = unidirectional
+        self.numverts = numverts
+        self.vertsize = vertsize
+
 
 
     # forward pass
