@@ -57,21 +57,25 @@ class DeepSpeedSparseSelfAttention(nn.Module):
         return DeepSpeedSparseSelfAttention.ops[L]
 
     # constructor
-    def __init__(self, embed_dim, num_heads, key_padding_mask_mode='add', attn_mask_mode='mul',
-            mode='fixed', block=16, stride=64, unidirectional=False, numverts=1, vertsize=1):
+    def __init__(self, embed_dim, num_heads,
+                mode='fixed', block=16, stride=64, unidirectional=False, numverts=1, vertsize=1,
+                key_padding_mask_mode='add', attn_mask_mode='mul'):
         super().__init__()
 
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.key_padding_mask_mode = key_padding_mask_mode
-        self.attn_mask_mode = attn_mask_mode
-        # Sparsity Information
+        
+        # sparsity information
         self.mode = mode
         self.block = block
         self.stride = stride
         self.unidirectional = unidirectional
         self.numverts = numverts
         self.vertsize = vertsize
+        
+        # mask modes
+        self.key_padding_mask_mode = key_padding_mask_mode
+        self.attn_mask_mode = attn_mask_mode
 
 
 
