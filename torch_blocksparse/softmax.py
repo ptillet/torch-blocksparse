@@ -316,7 +316,7 @@ class _sparse_softmax(torch.autograd.Function):
         apply_scale = False if ctx.scale == 1.0 else True
         # run kernel
         kernel = _sparse_softmax.make_kernel(bwd_kernels, bwd_src, ctx.maxlut*ctx.block, x.dtype, ctx.block, 
-                    apply_scale, ctx.apply_rpe, ctx.apply_kp_mask, ctx.apply_attn_mask, ctx.ctx.kp_mask_mode, ctx.attn_mask_mode)
+                    apply_scale, ctx.apply_rpe, ctx.apply_kp_mask, ctx.apply_attn_mask, ctx.kp_mask_mode, ctx.attn_mask_mode)
         M = x.shape[0]
         grid = lambda opt: [triton.cdiv(ctx.spdims[0] * ctx.spdims[1] * ctx.block, opt.d('TM')), M]
         kernel(x, ctx.scale, dx, lut, ctx.maxlut, x.stride(0), dx.stride(0), grid=grid)
