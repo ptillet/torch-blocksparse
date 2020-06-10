@@ -6,7 +6,7 @@ import torch_blocksparse
 import sys
 
 
-class SimplifiedSparseAttention(nn.Module):
+class DeepSpeedSparseSelfAttention(nn.Module):
 
     # Make binary block-sparsity layout from given parameters
     # contribution of Arash Ashari (Microsoft Research)
@@ -35,8 +35,8 @@ class SimplifiedSparseAttention(nn.Module):
             layout[:, :, :] = 1
         elif mode == "fixed":
             for i in range(0, num_heads):
-                layout = SimplifiedSparseAttention._set_s1_layout(layout, i, num_blocks, block_stride, unidirectional)
-                layout = SimplifiedSparseAttention._set_s2_layout(layout, i, num_blocks, block_stride, unidirectional, numverts, vertsize)
+                layout = DeepSpeedSparseSelfAttention._set_s1_layout(layout, i, num_blocks, block_stride, unidirectional)
+                layout = DeepSpeedSparseSelfAttention._set_s2_layout(layout, i, num_blocks, block_stride, unidirectional, numverts, vertsize)
         return layout
 
     class SparsityInfo:
@@ -56,9 +56,9 @@ class SimplifiedSparseAttention(nn.Module):
     # add to cache
     def get_ops(self, L):
         import sys
-        if L not in SimplifiedSparseAttention.ops:
+        if L not in DeepSpeedSparseSelfAttention.ops:
             sparsity = self.sparsity
-            layout = SimplifiedSparseAttention._make_layout(self.num_heads, L // sparsity.block, sparsity.mode,
+            layout = DeepSpeedSparseSelfAttention._make_layout(self.num_heads, L // sparsity.block, sparsity.mode,
                                                     sparsity.stride // sparsity.block, sparsity.unidirectional,
                                                     sparsity.numverts, sparsity.vertsize)
             sparse_dot_sdd_nt = torch_blocksparse.MatMul(layout, sparsity.block, 'sdd',
@@ -66,22 +66,23 @@ class SimplifiedSparseAttention(nn.Module):
             sparse_dot_dsd_nn = torch_blocksparse.MatMul(layout, sparsity.block, 'dsd',
                                                                trans_a=False, trans_b=False)
             sparse_softmax = torch_blocksparse.Softmax(layout, sparsity.block)
-            SimplifiedSparseAttention.ops[L] = (sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax)
-        return SimplifiedSparseAttention.ops[L]
+            DeepSpeedSparseSelfAttention.ops[L] = (sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax)
+        return DeepSpeedSparseSelfAttention.ops[L]
 
     # constructor
-    def __init__(self, embed_dim, num_heads, sparsity, key_padding_mask_mode='add', attn_mask_mode='mul'):
+    def __init__(self, embed_dim, num_heads, key_padding_mask_mode='add', attn_mask_mode='mul',
+            sparsity_mode='fixed', block=16, stride=64, unidirectional=False, numverts=1, vertsize=1):
         super().__init__()
 
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.sparsity = sparsity
+        self.sparsity = SparsityInfo(mode=sparsity_mode, block, stride, unidirectional, numverts, vertsize)
         self.key_padding_mask_mode = key_padding_mask_mode
         self.attn_mask_mode = attn_mask_mode
 
 
     # forward pass
-    def forward(self, query, key, value, key_padding_mask=None, attn_mask=None):
+    def forward(self, query, key, value, rpe=None, key_padding_mask=None, attn_mask=None):
         # check that operation is supported
         if query.shape != key.shape or key.shape != value.shape:
             raise NotImplementedError('only self-attention is supported for now')
@@ -93,7 +94,7 @@ class SimplifiedSparseAttention(nn.Module):
 
         # attention scores
         attn_output_weights = sparse_dot_sdd_nt(query, key)
-        attn_output_weights = sparse_softmax(attn_output_weights, scale=scaling, key_padding_mask=key_padding_mask, attn_mask=attn_mask,
+        attn_output_weights = sparse_softmax(attn_output_weights, scale=scaling, rpe=rpe, key_padding_mask=key_padding_mask, attn_mask=attn_mask,
                 key_padding_mask_mode=self.key_padding_mask_mode, attn_mask_mode=self.attn_mask_mode)
         # outputs
         attn_output = sparse_dot_dsd_nn(attn_output_weights, value)
