@@ -7,11 +7,15 @@ fwd_src = '''
 __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16), 
                             float scale,
                             int *LUT __readonly __noalias __aligned(16), 
+                            TYPE *RPE __readonly __noalias __aligned(16), 
                             TYPE *KP_M __readonly __noalias __aligned(16), 
                             TYPE *ATTN_M __readonly __noalias __aligned(16),
-                            int num_blocks, 
+                            int num_blocks, int num_blocks_per_head,
                             int sizemax, 
-                            long stride_zx __multipleof(BLOCK), 
+                            long stride_zx __multipleof(BLOCK),
+                            long stride_zrpe __multipleof(BLOCK),
+                            int stride_hrpe __multipleof(BLOCK),
+                            int stride_srpe __multipleof(BLOCK),
                             int stride_zkpm __multipleof(BLOCK), 
                             int stride_zattnm __multipleof(BLOCK)){ 
   int pidhm = get_program_id(0);
@@ -41,41 +45,88 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
                     + blockid * BLOCK * BLOCK 
                     + rxm * BLOCK 
                     + rxn;
+#ifdef APPLY_RPE
+  // pointers to relative position embedding
+  TYPE* prpe[TN] = RPE + pidz * stride_zrpe
+                            + blockid / num_blocks_per_head * stride_hrpe
+                            + columnid * BLOCK
+                            + rowid * BLOCK * stride_srpe
+                            + rxm * stride_srpe
+                            + rxn;
+#endif
 
+#ifdef APPLY_KP_MASK
   // pointers to key padding mask
   TYPE* pkp_m[TN]  = KP_M + pidz * stride_zkpm 
                           + columnid * BLOCK
                           + rxn;
+#endif
 
+#ifdef APPLY_ATTN_MASK
   // pointers to attention mask
   TYPE* pattn_m[TN] = ATTN_M + columnid * BLOCK 
                              + rowid * BLOCK * stride_zattnm
                              + rxm * stride_zattnm
                              + rxn;
-
+#endif
  
   // load  input
   TYPE x[TN] =  check ? *px : -INFINITY;
+
+#ifdef APPLY_RPE
+  // load relative position embedding
+  TYPE rpe[TN] = check ? *prpe : 0;
+#endif
+
+#ifdef APPLY_KP_MASK
   // load key-padding mask
-  bool do_kp_mask[TN] = KP_M;
-  TYPE kp_m[TN] = (check && do_kp_mask)? *pkp_m : -INFINITY;
+  TYPE kp_m[TN] = check ? *pkp_m : -INFINITY;
+#endif
+
+#ifdef APPLY_ATTN_MASK
   // load attention mask
-  bool do_attn_mask[TN] = ATTN_M;
-  TYPE attn_m[TN] = (check && do_attn_mask)? *pattn_m : -INFINITY;
+  TYPE attn_m[TN] = check ? *pattn_m : -INFINITY;
+#endif
 
   // compute softmax in float
+#ifdef APPLY_RPE
+  float Frpe[TN] = rpe;
+#endif
+
+#ifdef APPLY_KP_MASK
   float Fkp_m[TN] = kp_m;
+#endif
+
+#ifdef APPLY_ATTN_MASK
   float Fattn_m[TN] = attn_m;
+#endif
+
 #ifdef KP_MASK_MUL
   Fkp_m = (Fkp_m == 0) ? (float[TN])-INFINITY : 0;
 #endif
+
 #ifdef ATTN_MASK_MUL
   Fattn_m = (Fattn_m == 0) ? (float[TN])-INFINITY : 0;
 #endif
+
   float Fx[TN] = x;
+
+#ifdef APPLY_SCALE
   Fx = Fx * scale; // apply scale
-  Fx = Fx + (do_kp_mask ? Fkp_m : 0); // apply key padding mask
-  Fx = Fx + (do_attn_mask ? Fattn_m : 0); // apply attention mask
+#endif
+
+#ifdef APPLY_RPE
+  Fx = Fx + Frpe; // apply relative position embedding
+#endif
+
+#ifdef APPLY_KP_MASK
+  Fx = Fx + Fkp_m; // apply key padding mask
+#endif
+
+#ifdef APPLY_ATTN_MASK
+  Fx = Fx + Fattn_m; // apply attention mask
+#endif
+
   float Fxmax  = Fx[max];
   float Fy[TN] = exp(Fx - Fxmax);
   float Fysum = (check ? Fy : 0)[+];
@@ -169,45 +220,81 @@ class _sparse_softmax(torch.autograd.Function):
         return lut, int(sizes.max())
 
     @staticmethod
-    def make_kernel(cache, src, max_k, dtype, block, kp_mask_mode, attn_mask_mode):
+    def make_kernel(cache, src, max_k, dtype, block, apply_scale, apply_rpe, apply_kp_mask, apply_attn_mask, kp_mask_mode, attn_mask_mode):
         if max_k >= 32768:
           raise NotImplementedError('Reductions larger than 32768 elements '\
                                     'are not yet implemented')
-        num_warps = 4 if max_k < 512 else (4 if max_k < 2048 else 8)
+        num_warps = 4 if max_k < 512 else (8 if max_k < 2048 else 16)
         pad = num_warps * 32 * 2
         TN = (int(max_k) + pad-1)//pad * pad
         # just-in-time compile kernel
-        key = (block, dtype, num_warps, TN, kp_mask_mode, attn_mask_mode)
+        key = (block, dtype, num_warps, TN, apply_scale, apply_rpe, apply_kp_mask, apply_attn_mask, kp_mask_mode, attn_mask_mode)
         if key not in cache:
             defines = {'TM': [1], 'TN': [TN], 'TYPE': dtype, 'BLOCK': block,
                        'INFINITY': {torch.float32: 'F32_INFINITY',
                                     torch.float16: 'F16_INFINITY'}[dtype]}
-            if kp_mask_mode == 'mul':
-                defines['KP_MASK_MUL'] = True
-            if attn_mask_mode == 'mul':
-                defines['ATTN_MASK_MUL'] = True
+            if apply_scale:
+                defines['APPLY_SCALE'] = True
+            if apply_rpe:
+                defines['APPLY_RPE'] = True
+            if apply_kp_mask:
+                defines['APPLY_KP_MASK'] = True
+                if kp_mask_mode == 'mul':
+                    defines['KP_MASK_MUL'] = True
+            if apply_attn_mask:
+                defines['APPLY_ATTN_MASK'] = True
+                if attn_mask_mode == 'mul':
+                    defines['ATTN_MASK_MUL'] = True
             kernel  = triton.kernel(src, defines=defines, num_warps=[num_warps])
             cache[key] = kernel
         return cache[key]
 
     @staticmethod
-    def forward(ctx, x, scale, key_padding_mask, attn_mask, kp_mask_mode, attn_mask_mode,
-                spdims, block, lut, num_blocks, maxlut, bench, time):
+    def forward(ctx, x, scale, rpe, key_padding_mask, attn_mask, kp_mask_mode, attn_mask_mode,
+                spdims, block, lut, num_blocks, num_blocks_per_head, maxlut, bench, time):
+        apply_scale = False if scale == 1.0 else True
+
+        # handle None rpe
+        if rpe is None:
+            apply_rpe = False
+            stride_zrpe, stride_hrpe, stride_srpe = 0, 0, 0
+            rpe = torch.empty(0, dtype=x.dtype, device=x.device)
+        else:
+            apply_rpe = True
+            stride_zrpe, stride_hrpe, stride_srpe = rpe.stride(0), rpe.stride(1), rpe.stride(2)
+
+        # handle None key_padding_mask
+        if key_padding_mask is None:
+            apply_kp_mask = False
+            stride_zkpm = 0
+            key_padding_mask = torch.empty(0, dtype=x.dtype, device=x.device)
+        else:
+            apply_kp_mask = True
+            stride_zkpm = key_padding_mask.stride(0)
+
+        # handle None attention_mask
+        if attn_mask is None:
+            apply_attn_mask = False
+            stride_zattnm = 0
+            attn_mask = torch.empty(0, dtype=x.dtype, device=x.device)
+        else:
+            apply_attn_mask = True
+            stride_zattnm = attn_mask.stride(0)
+
+
         # run kernel
-        kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block, 
-                                             kp_mask_mode, attn_mask_mode)
+        kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block,
+                                            apply_scale, apply_rpe, apply_kp_mask, apply_attn_mask,
+                                            kp_mask_mode, attn_mask_mode)
         M = x.shape[0]
         grid = lambda opt: [triton.cdiv(spdims[0] * spdims[1] * block, opt.d('TM')), M]
-        # handle None key_padding_mask
-        stride_zkpm = 0 if key_padding_mask is None else key_padding_mask.stride(0)
-        key_padding_mask = torch.empty(0, dtype=x.dtype, device=x.device) if key_padding_mask is None else key_padding_mask
-        # handle None attention_mask
-        stride_zattnm = 0 if attn_mask is None else attn_mask.stride(0)
-        attn_mask = torch.empty(0, dtype=x.dtype, device=x.device) if attn_mask is None else attn_mask
+
         # run kernel
-        time[0] = kernel(x, scale, lut, key_padding_mask, attn_mask,\
-                         num_blocks, maxlut,\
-                         x.stride(0), stride_zkpm, stride_zattnm,\
+        time[0] = kernel(x, scale, lut, rpe, key_padding_mask, attn_mask,\
+                         num_blocks, num_blocks_per_head, maxlut,\
+                         x.stride(0),\
+                         stride_zrpe, stride_hrpe, stride_srpe,\
+                         stride_zkpm, stride_zattnm,\
                          grid=grid, bench=bench)
         # save to context
         ctx.mark_dirty(x)
@@ -216,6 +303,10 @@ class _sparse_softmax(torch.autograd.Function):
         ctx.block = block
         ctx.maxlut = maxlut
         ctx.scale = scale
+        ctx.apply_scale = apply_scale
+        ctx.apply_rpe = apply_rpe
+        ctx.apply_kp_mask = apply_kp_mask
+        ctx.apply_attn_mask = apply_attn_mask
         ctx.kp_mask_mode = kp_mask_mode
         ctx.attn_mask_mode = attn_mask_mode
         return x
@@ -226,11 +317,12 @@ class _sparse_softmax(torch.autograd.Function):
         x, lut = ctx.saved_tensors
         # run kernel
         kernel = _sparse_softmax.make_kernel(bwd_kernels, bwd_src, ctx.maxlut*ctx.block, x.dtype, ctx.block, 
-                                             ctx.kp_mask_mode, ctx.attn_mask_mode)
+                                            ctx.apply_scale, ctx.apply_rpe, ctx.apply_kp_mask, ctx.apply_attn_mask,
+                                            ctx.kp_mask_mode, ctx.attn_mask_mode)
         M = x.shape[0]
         grid = lambda opt: [triton.cdiv(ctx.spdims[0] * ctx.spdims[1] * ctx.block, opt.d('TM')), M]
         kernel(x, ctx.scale, dx, lut, ctx.maxlut, x.stride(0), dx.stride(0), grid=grid)
-        return dx, None, None, None, None, None, None, None, None, None, None, None, None
+        return dx, None, None, None, None, None, None, None, None, None, None, None, None, None, None
 
 class Softmax:
     
@@ -239,21 +331,24 @@ class Softmax:
     def __init__(self, layout, block, bench = False):
         self.fwd_lut, self.fwd_maxlut = _sparse_softmax.make_lut(layout, block)
         self.num_blocks = layout.sum()
+        self.num_blocks_per_head = self.num_blocks / layout.shape[0]
         self.spdims = layout.shape
         self.block = block
         self.bench = bench
     
-    def __call__(self, x, scale = 1., key_padding_mask = None, attn_mask = None, 
-                 key_padding_mask_mode='add', attn_mask_mode='add'):
+    def __call__(self, x, scale = 1., rpe = None, key_padding_mask = None, attn_mask = None,
+            key_padding_mask_mode='add', attn_mask_mode='add'):
         time_y = [None]
+        if rpe is not None and rpe.dtype != x.dtype:
+            raise ValueError('relative position embedding must be %s' % x.dtype)
         if attn_mask is not None and attn_mask.dtype != x.dtype:
             raise ValueError('Attention mask must be %s' % x.dtype)
         if key_padding_mask is not None and key_padding_mask.dtype != x.dtype:
             raise ValueError('Key padding mask must be %s' % x.dtype)
-        x = Softmax.sparse_softmax(x, scale, key_padding_mask, attn_mask, 
+        x = Softmax.sparse_softmax(x, scale, rpe, key_padding_mask, attn_mask,
                                   key_padding_mask_mode, attn_mask_mode,
                                   self.spdims, self.block,
-                                  self.fwd_lut, self.num_blocks, 
+                                  self.fwd_lut, self.num_blocks, self.num_blocks_per_head,
                                   self.fwd_maxlut, self.bench, time_y)
         self.time_y = time_y[0]
         return x
