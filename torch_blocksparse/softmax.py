@@ -75,20 +75,17 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
 
 #ifdef APPLY_RPE
   // load relative position embedding
-  bool do_rpe[TN] = RPE;
-  TYPE rpe[TN] = (check && do_rpe)? *prpe : 0;
+  TYPE rpe[TN] = check ? *prpe : 0;
 #endif
- 
+
 #ifdef APPLY_KP_MASK
   // load key-padding mask
-  bool do_kp_mask[TN] = KP_M;
-  TYPE kp_m[TN] = (check && do_kp_mask)? *pkp_m : -INFINITY;
+  TYPE kp_m[TN] = check ? *pkp_m : -INFINITY;
 #endif
 
 #ifdef APPLY_ATTN_MASK
   // load attention mask
-  bool do_attn_mask[TN] = ATTN_M;
-  TYPE attn_m[TN] = (check && do_attn_mask)? *pattn_m : -INFINITY;
+  TYPE attn_m[TN] = check ? *pattn_m : -INFINITY;
 #endif
 
   // compute softmax in float
@@ -113,20 +110,21 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
 #endif
 
   float Fx[TN] = x;
+
 #ifdef APPLY_SCALE
   Fx = Fx * scale; // apply scale
 #endif
 
 #ifdef APPLY_RPE
-  Fx = Fx + (do_rpe ? Frpe : 0); // apply relative position embedding
+  Fx = Fx + Frpe; // apply relative position embedding
 #endif
 
 #ifdef APPLY_KP_MASK
-  Fx = Fx + (do_kp_mask ? Fkp_m : 0); // apply key padding mask
+  Fx = Fx + Fkp_m; // apply key padding mask
 #endif
 
 #ifdef APPLY_ATTN_MASK
-  Fx = Fx + (do_attn_mask ? Fattn_m : 0); // apply attention mask
+  Fx = Fx + Fattn_m; // apply attention mask
 #endif
 
   float Fxmax  = Fx[max];
@@ -226,7 +224,7 @@ class _sparse_softmax(torch.autograd.Function):
         if max_k >= 32768:
           raise NotImplementedError('Reductions larger than 32768 elements '\
                                     'are not yet implemented')
-        num_warps = 4 if max_k < 512 else (4 if max_k < 2048 else 8)
+        num_warps = 4 if max_k < 512 else (8 if max_k < 2048 else 16)
         pad = num_warps * 32 * 2
         TN = (int(max_k) + pad-1)//pad * pad
         # just-in-time compile kernel
@@ -255,6 +253,7 @@ class _sparse_softmax(torch.autograd.Function):
     def forward(ctx, x, scale, rpe, key_padding_mask, attn_mask, kp_mask_mode, attn_mask_mode,
                 spdims, block, lut, num_blocks, num_blocks_per_head, maxlut, bench, time):
         apply_scale = False if scale == 1.0 else True
+
         # handle None rpe
         if rpe is None:
             apply_rpe = False
@@ -285,10 +284,12 @@ class _sparse_softmax(torch.autograd.Function):
 
         # run kernel
         kernel = _sparse_softmax.make_kernel(fwd_kernels, fwd_src, maxlut*block, x.dtype, block,
-                            apply_scale, apply_rpe, apply_kp_mask, apply_attn_mask, kp_mask_mode, attn_mask_mode)
+                                            apply_scale, apply_rpe, apply_kp_mask, apply_attn_mask,
+                                            kp_mask_mode, attn_mask_mode)
         M = x.shape[0]
         grid = lambda opt: [triton.cdiv(spdims[0] * spdims[1] * block, opt.d('TM')), M]
-                # run kernel
+
+        # run kernel
         time[0] = kernel(x, scale, lut, rpe, key_padding_mask, attn_mask,\
                          num_blocks, num_blocks_per_head, maxlut,\
                          x.stride(0),\
@@ -302,6 +303,7 @@ class _sparse_softmax(torch.autograd.Function):
         ctx.block = block
         ctx.maxlut = maxlut
         ctx.scale = scale
+        ctx.apply_scale = apply_scale
         ctx.apply_rpe = apply_rpe
         ctx.apply_kp_mask = apply_kp_mask
         ctx.apply_attn_mask = apply_attn_mask
@@ -313,10 +315,10 @@ class _sparse_softmax(torch.autograd.Function):
     def backward(ctx, dx):
         # retrieve from context
         x, lut = ctx.saved_tensors
-        apply_scale = False if ctx.scale == 1.0 else True
         # run kernel
         kernel = _sparse_softmax.make_kernel(bwd_kernels, bwd_src, ctx.maxlut*ctx.block, x.dtype, ctx.block, 
-                    apply_scale, ctx.apply_rpe, ctx.apply_kp_mask, ctx.apply_attn_mask, ctx.kp_mask_mode, ctx.attn_mask_mode)
+                                            ctx.apply_scale, ctx.apply_rpe, ctx.apply_kp_mask, ctx.apply_attn_mask,
+                                            ctx.kp_mask_mode, ctx.attn_mask_mode)
         M = x.shape[0]
         grid = lambda opt: [triton.cdiv(ctx.spdims[0] * ctx.spdims[1] * ctx.block, opt.d('TM')), M]
         kernel(x, ctx.scale, dx, lut, ctx.maxlut, x.stride(0), dx.stride(0), grid=grid)

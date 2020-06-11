@@ -77,8 +77,6 @@ class DeepSpeedSparseSelfAttention(nn.Module):
         self.key_padding_mask_mode = key_padding_mask_mode
         self.attn_mask_mode = attn_mask_mode
 
-
-
     # forward pass
     def forward(self, query, key, value, rpe=None, key_padding_mask=None, attn_mask=None):
         # check that operation is supported
