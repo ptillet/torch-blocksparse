@@ -211,7 +211,7 @@ class _sparse_matmul(torch.autograd.Function):
   sdd_cache = dict()
   dsd_cache = dict()
   dds_cache = dict()
-  locks = None
+  locks = dict()
 
   # Given an array sizes representing reduction size for each
   # column of a block-mode matrix multiplication,
@@ -266,11 +266,11 @@ class _sparse_matmul(torch.autograd.Function):
     return segments, column, lockid, maxid, offsets
   
   @staticmethod
-  def get_locks(size):
-    if _sparse_matmul.locks is None or \
-        size > _sparse_matmul.locks.size(0):
-      _sparse_matmul.locks = torch.zeros(size, dtype=torch.int32).cuda()
-    return _sparse_matmul.locks
+  def get_locks(size, dev):
+    if dev not in _sparse_matmul.locks or \
+        size > _sparse_matmul.locks[dev].size(0):
+      _sparse_matmul.locks[dev] = torch.zeros(size, dtype=torch.int32, device=dev)
+    return _sparse_matmul.locks[dev]
 
   ##########################
   # SPARSE = DENSE x DENSE #
@@ -400,7 +400,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
                                                       extra_cflags=['-O2', '-fopenmp']).sdd_segment
 
   @staticmethod
-  def make_sdd_lut(layout, block, dtype):
+  def make_sdd_lut(layout, block, dtype, device):
     start_width = 64 // block
     segmented = _sparse_matmul.sdd_segment(layout.type(torch.int32), start_width)
     luts, widths, packs = [], [], []
@@ -411,7 +411,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
       j = nnz[:, 2]
       b = nnz[:, 3]
       lut = torch.stack((h, i, j, b), dim=1).view(-1).contiguous()
-      luts.append(lut.type(torch.int32).cuda()) 
+      luts.append(lut.type(torch.int32).to(device)) 
       widths.append(width)
       packs.append(size)
     # create locks
@@ -455,7 +455,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
 
       kernel = _sparse_matmul.sdd_cache[key]
       # create output
-      locks = _sparse_matmul.get_locks(2*width*AS0*num_lock)
+      locks = _sparse_matmul.get_locks(2*width*AS0*num_lock, a.device)
       # maximum grid size is 65535
       # so operation might be decomposed into multiple
       # kernel calls
@@ -481,7 +481,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
   # Given a binary layout of 0s and 1s,
   # Construct look-up table for efficient execution on GPUs
   @staticmethod
-  def make_dxx_lut(layout, block, step, trans, transform = lambda idx: idx):
+  def make_dxx_lut(layout, block, step, trans, device, transform = lambda idx: idx):
     # load-balancing
     _empty = torch.tensor([], dtype=torch.int64, device=layout.device)
     segments = _empty.clone()
@@ -562,7 +562,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
     incs = torch.stack((xincs, wincs), dim=1).view(-1).contiguous()
     # create lut
     lut = torch.cat((header, incs))
-    lut = lut.type(torch.int32).cuda()
+    lut = lut.type(torch.int32).to(device)
     # create locks
     num_locks = max(1, lockid.max())
     return lut, num_locks, width, None
@@ -603,7 +603,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
     CS1 = AS1
     CS2 = BS2 if trans_c else AS2
     CS3 = AS2 if trans_c else BS2
-    locks = _sparse_matmul.get_locks(2*AS0*AS2//32*num_locks)
+    locks = _sparse_matmul.get_locks(2*AS0*AS2//32*num_locks, a.device)
     c = torch.empty((CS0, CS1, CS2, CS3), dtype=dtype, device=a.device)
     time[0] = kernel(a, b, c, 
                      a.stride(2), block, c.stride(2), 
@@ -650,7 +650,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
     CS1 = BS1
     CS2 = BS3 if trans_c else AS1
     CS3 = AS1 if trans_c else BS3
-    locks = _sparse_matmul.get_locks(2*BS0*BS3//32*num_locks)
+    locks = _sparse_matmul.get_locks(2*BS0*BS3//32*num_locks, a.device)
     c = torch.empty((CS0, CS1, CS2, CS3), dtype=dtype, device=a.device)
     time[0] = kernel(a, b, c, 
                      block, b.stride(2), c.stride(2), 
@@ -718,33 +718,33 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
 class MatMul:
   
   
-  def make_lut(self, dtype):
-    key = (dtype, )
+  def make_lut(self, dtype, device):
+    key = (dtype, device)
     if key in self.lut_cache:
       return self.lut_cache[key]
     # C look-up table
     layout, block = self.layout, self.block
     step = 8 if dtype == torch.float32 else 16
     if self.mode == 'sdd':
-      c_lut, c_num_locks, c_width, c_packs = _sparse_matmul.make_sdd_lut(layout, block, dtype)
+      c_lut, c_num_locks, c_width, c_packs = _sparse_matmul.make_sdd_lut(layout, block, dtype, device)
     elif self.mode == 'dsd':
-      c_lut, c_num_locks, c_width, c_packs = _sparse_matmul.make_dxx_lut(layout, block, step, not self.trans_a)
+      c_lut, c_num_locks, c_width, c_packs = _sparse_matmul.make_dxx_lut(layout, block, step, not self.trans_a, device)
     elif self.mode == 'dds':
-      c_lut, c_num_locks, c_width, c_packs = _sparse_matmul.make_dxx_lut(layout, block, step, self.trans_b)
+      c_lut, c_num_locks, c_width, c_packs = _sparse_matmul.make_dxx_lut(layout, block, step, self.trans_b, device)
     # DA look-up table
     if self.mode == 'sdd':
-      da_lut, da_num_locks, da_width, da_packs = _sparse_matmul.make_dxx_lut(layout, block, step, True)
+      da_lut, da_num_locks, da_width, da_packs = _sparse_matmul.make_dxx_lut(layout, block, step, True, device)
     elif self.mode == 'dsd':
-      da_lut, da_num_locks, da_width, da_packs = _sparse_matmul.make_sdd_lut(layout, block, dtype)
+      da_lut, da_num_locks, da_width, da_packs = _sparse_matmul.make_sdd_lut(layout, block, dtype, device)
     elif self.mode == 'dds':
-      da_lut, da_num_locks, da_width, da_packs = _sparse_matmul.make_dxx_lut(layout, block, step, not self.trans_b)
+      da_lut, da_num_locks, da_width, da_packs = _sparse_matmul.make_dxx_lut(layout, block, step, not self.trans_b, device)
     # DB look-up table
     if self.mode == 'sdd':
-      db_lut, db_num_locks, db_width, db_packs = _sparse_matmul.make_dxx_lut(layout, block, step, False)
+      db_lut, db_num_locks, db_width, db_packs = _sparse_matmul.make_dxx_lut(layout, block, step, False, device)
     elif self.mode == 'dsd':
-      db_lut, db_num_locks, db_width, db_packs = _sparse_matmul.make_dxx_lut(layout, block, step, self.trans_a)
+      db_lut, db_num_locks, db_width, db_packs = _sparse_matmul.make_dxx_lut(layout, block, step, self.trans_a, device)
     elif self.mode == 'dds':
-      db_lut, db_num_locks, db_width, db_packs = _sparse_matmul.make_sdd_lut(layout, block, dtype)
+      db_lut, db_num_locks, db_width, db_packs = _sparse_matmul.make_sdd_lut(layout, block, dtype, device)
     self.lut_cache[key] = (c_lut, c_num_locks, c_width, c_packs,\
                            da_lut, da_num_locks, da_width, da_packs,\
                            db_lut, db_num_locks, db_width, db_packs)
@@ -780,7 +780,7 @@ class MatMul:
   def __call__(self, a, b):
     c_lut, c_num_locks, c_width, c_packs,\
     da_lut, da_num_locks, da_width, da_packs,\
-    db_lut, db_num_locks, db_width, db_packs = self.make_lut(a.dtype)
+    db_lut, db_num_locks, db_width, db_packs = self.make_lut(a.dtype, a.device)
     # timings
     time_c  = [None]
     time_da = [None]

@@ -199,7 +199,7 @@ class _sparse_softmax(torch.autograd.Function):
     bwd_kernels = dict()
 
     @staticmethod
-    def make_lut(layout, block):
+    def make_lut(layout, block, device):
         _empty = torch.tensor([], dtype=torch.int64, device=layout.device)
         sizes = _empty.clone()
         # sizes along rows
@@ -216,7 +216,7 @@ class _sparse_softmax(torch.autograd.Function):
         # construct look-up table
         offsets = offsets*3 + 2*sizes.numel()
         header = torch.stack((sizes, offsets), dim=1).view(-1)
-        lut = torch.cat((header, core)).type(torch.int32).cuda()
+        lut = torch.cat((header, core)).type(torch.int32).to(device)
         return lut, int(sizes.max())
 
     @staticmethod
@@ -328,13 +328,20 @@ class Softmax:
     
     sparse_softmax = _sparse_softmax.apply
 
+    def make_lut(self, device):
+        key = (device, )
+        if key not in self.lut_cache:
+          self.lut_cache[key] = _sparse_softmax.make_lut(self.layout, self.block, device)
+        return self.lut_cache[key]
+
     def __init__(self, layout, block, bench = False):
-        self.fwd_lut, self.fwd_maxlut = _sparse_softmax.make_lut(layout, block)
         self.num_blocks = layout.sum()
         self.num_blocks_per_head = self.num_blocks / layout.shape[0]
         self.spdims = layout.shape
+        self.layout = layout
         self.block = block
         self.bench = bench
+        self.lut_cache = dict()
     
     def __call__(self, x, scale = 1., rpe = None, key_padding_mask = None, attn_mask = None,
             key_padding_mask_mode='add', attn_mask_mode='add'):
@@ -345,11 +352,12 @@ class Softmax:
             raise ValueError('Attention mask must be %s' % x.dtype)
         if key_padding_mask is not None and key_padding_mask.dtype != x.dtype:
             raise ValueError('Key padding mask must be %s' % x.dtype)
+        lut, maxlut = self.make_lut(x.device)
         x = Softmax.sparse_softmax(x, scale, rpe, key_padding_mask, attn_mask,
                                   key_padding_mask_mode, attn_mask_mode,
                                   self.spdims, self.block,
-                                  self.fwd_lut, self.num_blocks, self.num_blocks_per_head,
-                                  self.fwd_maxlut, self.bench, time_y)
+                                  lut, self.num_blocks, self.num_blocks_per_head,
+                                  maxlut, self.bench, time_y)
         self.time_y = time_y[0]
         return x
 
