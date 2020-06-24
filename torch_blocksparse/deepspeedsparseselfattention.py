@@ -122,7 +122,8 @@ class DeepSpeedSparseSelfAttention(nn.Module):
             return x.permute(0, 1, 3, 2)
         return x
 
-    def transpose_mask_for_sparse(self, x, is_key_padding_mask=False):
+    def transpose_mask_for_sparse(self, qtype, x, is_key_padding_mask=False):
+        x = x.type(qtype)
         if is_key_padding_mask:
             xdim = x.dim()
             for d in range(xdim - 1, 0, -1):
@@ -143,12 +144,12 @@ class DeepSpeedSparseSelfAttention(nn.Module):
 
         # squeeze key_padding_mask if it is given
         if key_padding_mask is not None:
-            key_padding_mask = self.transpose_mask_for_sparse(key_padding_mask, is_key_padding_mask=True)
+            key_padding_mask = self.transpose_mask_for_sparse(query.dtype, key_padding_mask, is_key_padding_mask=True)
 
 
         # squeeze attn_mask if it is given
         if attn_mask is not None:
-            attn_mask = self.transpose_mask_for_sparse(attn_mask)
+            attn_mask = self.transpose_mask_for_sparse(query.dtype, attn_mask)
 
         # cache look-up table computations etc
         sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax = self.get_ops(num_heads, tgt_len)
