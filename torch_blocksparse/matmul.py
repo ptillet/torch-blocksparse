@@ -560,6 +560,7 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
     offsets += 6*width
     header = torch.stack((offsets, segments, column, depth, lockid, maxid), dim=1).view(-1).contiguous()
     incs = torch.stack((xincs, wincs), dim=1).view(-1).contiguous()
+    incs = torch.cat((incs, torch.zeros(2, device=incs.device, dtype=incs.dtype)))
     # create lut
     lut = torch.cat((header, incs))
     lut = lut.type(torch.int32).to(device)
