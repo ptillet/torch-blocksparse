@@ -433,6 +433,10 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
     BS2 = b.size(3 if trans_b else 2)
     BS3 = b.size(2 if trans_b else 3)
     dtype = a.dtype
+    if dtype == torch.float16 and AS3 % 64 > 0:
+      raise ValueError('Reduction size for SDD must be a multiple of 64 in FLOAT16')
+    if dtype == torch.float32 and AS3 % 16 > 0:
+      raise ValueError('Reduction size for SDD must be a multiple of 16 in FLOAT32')
     # create kernel
     total_width = sum([width*pack*pack for width,pack in zip(widths, packs)])
     c = torch.empty((AS0, total_width, block, block), dtype=dtype, device=a.device)
