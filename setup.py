@@ -4,7 +4,7 @@ import setuptools
 
 setuptools.setup(
     name             = 'torch-blocksparse',
-    version          = '1.0.3',
+    version          = '1.1.0',
     description      = 'Block-sparse primitives for PyTorch',
     author           = 'Philippe Tillet',
     maintainer       = 'Philippe Tillet',
