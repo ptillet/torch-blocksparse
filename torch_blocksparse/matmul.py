@@ -433,19 +433,24 @@ ret_t sdd_segment(torch::Tensor layout, int start_width) {
     BS2 = b.size(3 if trans_b else 2)
     BS3 = b.size(2 if trans_b else 3)
     dtype = a.dtype
-    if dtype == torch.float16 and AS3 % 64 > 0:
-      raise ValueError('Reduction size for SDD must be a multiple of 64 in FLOAT16')
-    if dtype == torch.float32 and AS3 % 16 > 0:
-      raise ValueError('Reduction size for SDD must be a multiple of 16 in FLOAT32')
+    is_16_multiple = AS3 % 16 == 0
+    is_32_multiple = AS3 % 32 == 0
+    is_64_multiple = AS3 % 64 == 0
+    if not is_16_multiple:
+      raise ValueError('Reduction size for SDD must be a multiple of 16')
     # create kernel
     total_width = sum([width*pack*pack for width,pack in zip(widths, packs)])
     c = torch.empty((AS0, total_width, block, block), dtype=dtype, device=a.device)
     for lut, width, pack in zip(luts, widths, packs):
       num_lock = 1
-      key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack)
+      key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack, is_32_multiple, is_64_multiple)
       if key not in _sparse_matmul.sdd_cache:
-        TK = {torch.float32: [8, 16],
-              torch.float16: [16, 32, 64]}[dtype]
+        F32TK  = [8, 16]
+        F16TK  = [16]
+        F16TK += [32] if is_32_multiple else []
+        F16TK += [64] if is_64_multiple else []
+        TK = {torch.float32: F32TK,
+              torch.float16: F16TK}[dtype]
         defines =  {'TM': block*pack, 'TN': block*pack, 'TMN': block*block*pack*pack, 'BLOCK': block, 
                   'TK': TK, 'TYPE': dtype,
                   'STRIDE_AM': '1'    if trans_a else 'lda', 
