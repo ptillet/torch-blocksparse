@@ -3,6 +3,7 @@ from torch.nn.functional import *
 import torch
 from collections import namedtuple
 import torch_blocksparse
+import torch_blocksparse_cpp_utils
 import sys
 
 def multi_head_attention_forward(query,                           # type: Tensor
@@ -201,38 +202,7 @@ def multi_head_attention_forward(query,                           # type: Tensor
     return attn_output, None
 
 
-_make_layout_src = '''
-  torch::Tensor make_layout(int num_heads, int num_blocks, const std::string& mode, 
-                            int block_stride, bool unidirectional, int numverts, int vertsize) {
-    std::vector<long> shape = {{num_heads, num_blocks, num_blocks}};
-    if(mode == "dense")
-      return torch::ones(shape, torch::kLong);
-    torch::Tensor ret = torch::zeros(shape, torch::kLong);
-    auto _ret  = ret.accessor<long, 3>();
-    for(int h = 0; h < num_heads; h++){
-      // set first part of layout
-      for(int i = 0; i < num_blocks; i+= block_stride)
-      for(int j = i; j < i + block_stride; j++)
-      for(int k = i; k < (unidirectional ? j+1 : i + block_stride); k++)
-        _ret[h][j][k] = 1;
-
-      // set second part of layout
-      int start = block_stride - (1 + h % numverts) * vertsize;
-      for(int i = 0; i < num_blocks; i++){
-        int end = unidirectional ? i : num_blocks;
-        for(int j = start; j < end; j+= block_stride)
-        for(int k = j; k < j + vertsize; k += num_blocks)
-          _ret[h][i][k] = 1;
-      }
-    }
-    return ret;
-  }
-'''
-
-make_layout = torch.utils.cpp_extension.load_inline(name='make_layout', 
-                                                    cpp_sources=[_make_layout_src], 
-                                                    functions=['make_layout'],
-                                                    extra_cflags=['-O2']).make_layout
+make_layout = torch_blocksparse_cpp_utils.make_layout
 
 class MultiheadAttention(nn.modules.activation.MultiheadAttention):
 
