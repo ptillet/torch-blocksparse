@@ -10,7 +10,7 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
                             TYPE *RPE __readonly __noalias __aligned(16), 
                             TYPE *KP_M __readonly __noalias __aligned(16), 
                             TYPE *ATTN_M __readonly __noalias __aligned(16),
-                            int num_blocks, int num_blocks_per_head,
+                            int num_blocks,
                             int sizemax, 
                             long stride_zx __multipleof(BLOCK),
                             long stride_zrpe __multipleof(BLOCK),
@@ -36,9 +36,10 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
   int   rbmn[TN] = check ? rbn : size - 1;
 
   // block id and column id
-  long blockid [TN]  = *(LUT + offset + rbmn*3 + 0);
-  long columnid[TN]  = *(LUT + offset + rbmn*3 + 1);
-  long rowid   [TN]  = *(LUT + offset + rbmn*3 + 2);
+  long blockid [TN]  = *(LUT + offset + rbmn*4 + 0);
+  long columnid[TN]  = *(LUT + offset + rbmn*4 + 1);
+  long rowid   [TN]  = *(LUT + offset + rbmn*4 + 2);
+  long headid  [TN]  = *(LUT + offset + rbmn*4 + 3);
 
   // pointers to X
   TYPE* px[TN]  = X + pidz * stride_zx
@@ -48,7 +49,7 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
 #ifdef APPLY_RPE
   // pointers to relative position embedding
   TYPE* prpe[TN] = RPE + pidz * stride_zrpe
-                            + blockid / num_blocks_per_head * stride_hrpe
+                            + headid * stride_hrpe
                             + columnid * BLOCK
                             + rowid * BLOCK * stride_srpe
                             + rxm * stride_srpe
@@ -167,7 +168,7 @@ __global__ void softmax_bwd(TYPE * X __readonly __noalias __aligned(16),
     int rbmn[TN] = check ? rbn : size - 1;
 
     // initialize pointers to block-sparse input
-    long blockid[TN] = *(LUT + offset + rbmn*3);
+    long blockid[TN] = *(LUT + offset + rbmn*4);
 
     TYPE* px[TN] = X + pidz * stride_zx
                          + blockid * BLOCK * BLOCK
@@ -210,11 +211,12 @@ class _sparse_softmax(torch.autograd.Function):
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
         # block indices
         idx = torch.arange(layout.sum())
+        head = layout.nonzero()[:, 0]
         rows = layout.nonzero()[:, 1]
         columns = layout.nonzero()[:, 2]
-        core   = torch.stack((idx, columns, rows), dim=1).view(-1)
+        core   = torch.stack((idx, columns, rows, head), dim=1).view(-1)
         # construct look-up table
-        offsets = offsets*3 + 2*sizes.numel()
+        offsets = offsets*4 + 2*sizes.numel()
         header = torch.stack((sizes, offsets), dim=1).view(-1)
         lut = torch.cat((header, core)).type(torch.int32).to(device)
         return lut, int(sizes.max())
@@ -251,7 +253,7 @@ class _sparse_softmax(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, scale, rpe, key_padding_mask, attn_mask, kp_mask_mode, attn_mask_mode,
-                spdims, block, lut, num_blocks, num_blocks_per_head, maxlut, bench, time):
+                spdims, block, lut, num_blocks, maxlut, bench, time):
         apply_scale = False if scale == 1.0 else True
 
         # handle None rpe
@@ -291,7 +293,7 @@ class _sparse_softmax(torch.autograd.Function):
 
         # run kernel
         time[0] = kernel(x, scale, lut, rpe, key_padding_mask, attn_mask,\
-                         num_blocks, num_blocks_per_head, maxlut,\
+                         num_blocks, maxlut,\
                          x.stride(0),\
                          stride_zrpe, stride_hrpe, stride_srpe,\
                          stride_zkpm, stride_zattnm,\
@@ -336,7 +338,6 @@ class Softmax:
 
     def __init__(self, layout, block, bench = False):
         self.num_blocks = layout.sum()
-        self.num_blocks_per_head = self.num_blocks / layout.shape[0]
         self.spdims = layout.shape
         self.layout = layout
         self.block = block
@@ -356,7 +357,7 @@ class Softmax:
         x = Softmax.sparse_softmax(x, scale, rpe, key_padding_mask, attn_mask,
                                   key_padding_mask_mode, attn_mask_mode,
                                   self.spdims, self.block,
-                                  lut, self.num_blocks, self.num_blocks_per_head,
+                                  lut, self.num_blocks,
                                   maxlut, self.bench, time_y)
         self.time_y = time_y[0]
         return x
