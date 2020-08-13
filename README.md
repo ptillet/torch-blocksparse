@@ -56,17 +56,3 @@ c = dot(a, b)
 softmax = torch_blocksparse.Softmax(layout, block)
 d = softmax(c)
 ```
-
-## Performance
-
-Here is the performance of this package compared to OpenAI blocksparse for the DDS layout (dense = dense x sparse) with square, non-transposed inputs:
-
-![](https://docs.google.com/spreadsheets/d/e/2PACX-1vTMh8lJHOYq07d2g7AQZOKb6-WgTQqK3iudLJ8I1LCgGKw_B9eKv1KFT0nKbrizy9fw-p2VjvIbTgLJ/pubchart?oid=717347395&format=image)
-
-![](https://docs.google.com/spreadsheets/d/e/2PACX-1vTMh8lJHOYq07d2g7AQZOKb6-WgTQqK3iudLJ8I1LCgGKw_B9eKv1KFT0nKbrizy9fw-p2VjvIbTgLJ/pubchart?oid=1552535399&format=image)
-
-![](https://docs.google.com/spreadsheets/d/e/2PACX-1vTMh8lJHOYq07d2g7AQZOKb6-WgTQqK3iudLJ8I1LCgGKw_B9eKv1KFT0nKbrizy9fw-p2VjvIbTgLJ/pubchart?oid=399094259&format=image)
-
-
-
-The file `test.py` includes simple benchmarking code.
