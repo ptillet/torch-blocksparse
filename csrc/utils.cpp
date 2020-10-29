@@ -88,7 +88,7 @@ void segment_blocks(torch::Tensor layout, torch::Tensor idx, torch::Tensor scrat
     if(current[h] > 0)
       to_cat.push_back(scratch[h].slice(0, 0, current[h]));
   if(!to_cat.empty())
-    ret.push_back({max_width, torch::cat(to_cat)});
+    ret.push_back(std::make_tuple(max_width, torch::cat(to_cat)));
 }
 
 
