@@ -293,7 +293,7 @@ class _sparse_softmax(torch.autograd.Function):
 
         # run kernel
         time[0] = kernel(x, scale, lut, rpe, key_padding_mask, attn_mask,\
-                         num_blocks, maxlut,\
+                         num_blocks.item(), maxlut,\
                          x.stride(0),\
                          stride_zrpe, stride_hrpe, stride_srpe,\
                          stride_zkpm, stride_zattnm,\
