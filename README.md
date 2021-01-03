@@ -18,9 +18,9 @@ where `op()` is identity or transposition.
 Inputs are FP32 or FP16 (with tensor cores).
 
 ## Installation
-Torch-Blocksparse depends on CUDA 10.1 and the [Triton](https://github.com/ptillet/triton) language and compiler, which requires llvm-9.
+Torch-Blocksparse depends on CUDA 10.1 and the [Triton](https://github.com/ptillet/triton) language and compiler, which requires llvm-10.
 ```
-sudo apt-get install llvm-9-dev # Ubuntu
+sudo apt-get install llvm-10-dev # Ubuntu
 ```
 You can then install the latest stable version from pip
 ```
