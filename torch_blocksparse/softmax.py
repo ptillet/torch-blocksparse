@@ -10,7 +10,6 @@ __global__ void softmax_fwd(TYPE *X __readonly __noalias __aligned(16),
                             TYPE *RPE __readonly __noalias __aligned(16), 
                             TYPE *KP_M __readonly __noalias __aligned(16), 
                             TYPE *ATTN_M __readonly __noalias __aligned(16),
-                            int num_blocks,
                             int sizemax, 
                             long stride_zx __multipleof(BLOCK),
                             long stride_zrpe __multipleof(BLOCK),
@@ -253,7 +252,7 @@ class _sparse_softmax(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, scale, rpe, key_padding_mask, attn_mask, kp_mask_mode, attn_mask_mode,
-                spdims, block, lut, num_blocks, maxlut, bench, time):
+                spdims, block, lut, maxlut, bench, time):
         apply_scale = False if scale == 1.0 else True
 
         # handle None rpe
@@ -293,7 +292,7 @@ class _sparse_softmax(torch.autograd.Function):
 
         # run kernel
         time[0] = kernel(x, scale, lut, rpe, key_padding_mask, attn_mask,\
-                         num_blocks, maxlut,\
+                         maxlut,\
                          x.stride(0),\
                          stride_zrpe, stride_hrpe, stride_srpe,\
                          stride_zkpm, stride_zattnm,\
@@ -337,7 +336,6 @@ class Softmax:
         return self.lut_cache[key]
 
     def __init__(self, layout, block, bench = False):
-        self.num_blocks = layout.sum()
         self.spdims = layout.shape
         self.layout = layout
         self.block = block
@@ -357,7 +355,7 @@ class Softmax:
         x = Softmax.sparse_softmax(x, scale, rpe, key_padding_mask, attn_mask,
                                   key_padding_mask_mode, attn_mask_mode,
                                   self.spdims, self.block,
-                                  lut, self.num_blocks,
+                                  lut, 
                                   maxlut, self.bench, time_y)
         self.time_y = time_y[0]
         return x
