@@ -210,9 +210,9 @@ class _sparse_softmax(torch.autograd.Function):
         offsets[1:] = torch.cumsum(sizes[:-1], dim=0)
         # block indices
         idx = torch.arange(layout.sum())
-        head = layout.nonzero()[:, 0]
-        rows = layout.nonzero()[:, 1]
-        columns = layout.nonzero()[:, 2]
+        head = layout.nonzero(as_tuple=False)[:, 0]
+        rows = layout.nonzero(as_tuple=False)[:, 1]
+        columns = layout.nonzero(as_tuple=False)[:, 2]
         core   = torch.stack((idx, columns, rows, head), dim=1).view(-1)
         # construct look-up table
         offsets = offsets*4 + 2*sizes.numel()

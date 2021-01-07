@@ -400,9 +400,9 @@ class _sparse_matmul(torch.autograd.Function):
     segments *= step
     # pointer increments
     if trans:
-      nnz = layout.nonzero()
+      nnz = layout.nonzero(as_tuple=False)
     else:
-      nnz = layout.transpose(1, 2).nonzero()
+      nnz = layout.transpose(1, 2).nonzero(as_tuple=False)
     num_blocks = nnz.size(0)
     offsets = torch.min(offsets, (num_blocks - 1)*torch.ones_like(offsets))
     idx = transform(nnz[:, 2]*block)
