@@ -325,9 +325,10 @@ class _sparse_matmul(torch.autograd.Function):
       key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c, pack, is_32_multiple, is_64_multiple)
       if key not in _sparse_matmul.sdd_cache:
         F32TK  = [8, 16]
-        F16TK  = [16]
-        F16TK += [32] if is_32_multiple else []
-        F16TK += [64] if is_64_multiple else []
+        #F16TK  = [16]
+        #F16TK += [32] if is_32_multiple else []
+        #F16TK += [64] if is_64_multiple else []
+        F16TK = [64]
         TK = {torch.float32: F32TK,
               torch.float16: F16TK}[dtype]
         defines =  {'TM': block*pack, 'TN': block*pack, 'TMN': block*block*pack*pack, 'BLOCK': block, 
@@ -519,7 +520,7 @@ class _sparse_matmul(torch.autograd.Function):
     # kernel
     key = (block, a.dtype, b.dtype, trans_a, trans_b, trans_c)
     if key not in _sparse_matmul.dsd_cache:
-      TN = [64, 128] if dtype == torch.float32 else [64, 128, 256]
+      TN = [64, 128] if dtype == torch.float32 else [64, 128]
       TK = [8]       if dtype == torch.float32 else [16]
       defines = {'TM': block, 'TN': TN, 'TK': TK, 
                  'BLOCK': block,

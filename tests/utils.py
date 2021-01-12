@@ -5,7 +5,7 @@ from time import time
 def dense_to_sparse(w, mask, block):
   Z = w.size(0)
   ret = torch.empty((Z, mask.sum(), block, block), dtype=w.dtype, device=w.device)
-  nnz = mask.nonzero()
+  nnz = mask.nonzero(as_tuple=False)
   h, i, j = nnz[:, 0], nnz[:, 1], nnz[:, 2]
   for zz in range(Z):
     for idx, (hh, ii, jj) in enumerate(zip(h, i, j)):
@@ -86,7 +86,7 @@ def compress_weights(w, layout, block):
 
 def allclose(x, y):
   assert x.dtype == y.dtype
-  rtol, atol = {torch.float32: (1e-4, 1e-5),
+  rtol, atol = {torch.float32: (1e-4, 1e-2),
                 torch.float16: (1e-2, 1e-3)}[x.dtype]
   return torch.allclose(x, y, rtol=rtol, atol=atol)
 

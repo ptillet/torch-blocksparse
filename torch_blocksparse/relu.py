@@ -48,8 +48,8 @@ void relu_dxdsdbdres(TYPE *X __readonly  __noalias __aligned(16),
   // write-back
   *?(check)pdx    = du * scale;
   *?(check)pdres  = du;
-  f32_atomic_add(dbias, ((float[TN])du)[+]);
-  f32_atomic_add(dscale, ((float[TN])(du*x))[+]);
+  atomic_add_float_1x1(dbias, ((float[TN])du)[+], (bool)1);
+  atomic_add_float_1x1(dscale, ((float[TN])(du*x))[+], (bool)1);
 }
 """
 

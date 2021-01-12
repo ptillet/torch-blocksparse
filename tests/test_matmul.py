@@ -97,8 +97,7 @@ def run_bench_mm(Z, H, M, N, K, rho, mode, trans_a, trans_b, block, dtype, layou
     ]
 )
 def test_op(mode, at, bt, block):
-  ac_y, ac_dx, ac_dw = run_test_mm(3, 2, 256, 512, 384, 0.5, mode, 
-                                  at, bt, block, torch.float32)
+  ac_y, ac_dx, ac_dw = run_test_mm(3, 2, 256, 512, 384, 0.5, mode, at, bt, block, torch.float16)
   assert ac_y
   assert ac_dx
   assert ac_dw
@@ -108,7 +107,7 @@ def bench_op(dtype):
   # attention configuration
   batch, heads, hidden = 1, 12, 512
   block, stride, nv, vs = 16, 64, 4, 1
-  L = [(mode, uni, at, bt) for mode in ['dds'] for uni in [False] for at in [False] for bt in [False]]
+  L = [(mode, uni, at, bt) for mode in ['sdd'] for uni in [False] for at in [False] for bt in [False]]
   xs = [4096]
   ys = torch.empty((len(xs), len(L)))
   for j, (mode, uni, at, bt) in enumerate(L):

@@ -13,7 +13,7 @@ def task(query, key, value, add_mask, Embed, NumHeads, sparsity):
 def test_op():
     torch.multiprocessing.freeze_support()
 
-    use_half = False
+    use_half = True
     BatchSize, NumHeads, SeqLen, Embed = 2, 2, 128, 128
     #BatchSize, NumHeads, SeqLen, Embed = 8, 32, 512, 1024
     #BatchSize, NumHeads, SeqLen, Embed = 16, 16, 1024, 1024
