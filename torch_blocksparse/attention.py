@@ -206,80 +206,26 @@ make_layout = torch_blocksparse_cpp_utils.make_layout
 
 class MultiheadAttention(nn.modules.activation.MultiheadAttention):
 
-    # Make binary block-sparsity layout from given parameters
-    # contribution of Arash Ashari (Microsoft Research)
-    @staticmethod
-    def _set_s1_layout(layout, h, num_blocks, block_stride, unidirectional):
-        for i in range(0, num_blocks, block_stride):
-            for j in range(i, i + block_stride):
-                for k in range(i, (j + 1 if unidirectional else i + block_stride)):
-                    layout[h, j, k] = 1
-        return layout
-
-    @staticmethod
-    def _set_s2_layout(layout, h, num_blocks, block_stride, unidirectional, numverts, vertsize):
-        start = block_stride - (1 + h % numverts) * vertsize
-        for i in range(0, num_blocks):
-            end = i if unidirectional else num_blocks
-            for j in range(start, end, block_stride):
-                for k in range(j, min(j + vertsize, num_blocks)):
-                    layout[h, i, k] = 1
-        return layout
-
-    @staticmethod
-    def _make_layout_python(num_heads, num_blocks, mode, block_stride, unidirectional, numverts, vertsize):
-        layout = torch.zeros((num_heads, num_blocks, num_blocks), dtype=torch.int64)
-        if mode == "dense":
-            layout[:, :, :] = 1
-        elif mode == "fixed":
-            for i in range(0, num_heads):
-                layout = MultiheadAttention._set_s1_layout(layout, i, num_blocks, block_stride, unidirectional)
-                layout = MultiheadAttention._set_s2_layout(layout, i, num_blocks, block_stride, unidirectional, numverts, vertsize)
-        return layout
-
-
-    @staticmethod
-    def _make_layout(num_heads, num_blocks, mode, block_stride, unidirectional, numverts, vertsize):
-        return make_layout(num_heads, num_blocks, mode, block_stride, unidirectional, numverts, vertsize)
-
-    class SparsityInfo:
-
-        def __init__(self, mode = None,
-                     block = None, stride=128,
-                     unidirectional = None, numverts = 1, vertsize = 1):
-            self.mode = mode
-            self.block = block
-            self.stride = stride
-            self.unidirectional = unidirectional
-            self.numverts = numverts
-            self.vertsize = vertsize
-
     ops = dict()
-
     # add to cache
     def get_ops(self, L):
         import sys
         if L not in MultiheadAttention.ops:
-            sparsity = self.sparsity
-            layout = MultiheadAttention._make_layout(self.num_heads, L // sparsity.block, sparsity.mode,
-                                                    sparsity.stride // sparsity.block, sparsity.unidirectional,
-                                                    sparsity.numverts, sparsity.vertsize)
-            sparse_dot_sdd_nt = torch_blocksparse.MatMul(layout, sparsity.block, 'sdd',
-                                                               trans_a=False, trans_b=True)
-            sparse_dot_dsd_nn = torch_blocksparse.MatMul(layout, sparsity.block, 'dsd',
-                                                               trans_a=False, trans_b=False)
-            sparse_softmax = torch_blocksparse.Softmax(layout, sparsity.block)
+            sparse_dot_sdd_nt = torch_blocksparse.MatMul(self.layout, self.block, 'sdd', trans_a=False, trans_b=True)
+            sparse_dot_dsd_nn = torch_blocksparse.MatMul(self.layout, self.block, 'dsd', trans_a=False, trans_b=False)
+            sparse_softmax = torch_blocksparse.Softmax(self.layout, self.block)
             MultiheadAttention.ops[L] = (sparse_dot_sdd_nt, sparse_dot_dsd_nn, sparse_softmax)
         return MultiheadAttention.ops[L]
 
     # constructor
-    def __init__(self, embed_dim, num_heads, sparsity, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False, kdim=None, vdim=None,
+    def __init__(self, embed_dim, num_heads, layout, block, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False, kdim=None, vdim=None,
                  key_padding_mask_mode='add', attn_mask_mode='mul'):
         if dropout != 0:
             raise NotImplementedError('dropout is not supported for now')
 
         super(MultiheadAttention, self).__init__(embed_dim, num_heads, dropout, bias, add_bias_kv, add_zero_attn, kdim, vdim)
-        self.sparsity = sparsity
+        self.layout = layout
+        self.block = block
         self.key_padding_mask_mode = key_padding_mask_mode
         self.attn_mask_mode = attn_mask_mode
 

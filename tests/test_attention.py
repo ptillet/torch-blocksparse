@@ -11,20 +11,17 @@ def task(query, key, value, add_mask, Embed, NumHeads, sparsity):
     mha(query, key, value, key_padding_mask=add_mask, need_weights=False)
 
 def test_op():
-    torch.multiprocessing.freeze_support()
+    torch.manual_seed(0)
 
     use_half = True
-    BatchSize, NumHeads, SeqLen, Embed = 2, 2, 128, 128
+    BlockSize, BatchSize, NumHeads, SeqLen, Embed = 16, 2, 2, 128, 128
     #BatchSize, NumHeads, SeqLen, Embed = 8, 32, 512, 1024
     #BatchSize, NumHeads, SeqLen, Embed = 16, 16, 1024, 1024
     #BatchSize, NumHeads, SeqLen, Embed = 8, 16, 4096, 1024
 
     # create sparse multi-head attention module
-    sparsity = torch_blocksparse.MultiheadAttention.SparsityInfo()
-    sparsity.mode = 'dense'
-    sparsity.block = 16
-    torch.manual_seed(0)
-    sparse_mha = torch_blocksparse.MultiheadAttention(Embed, NumHeads, sparsity).cuda()
+    layout = torch.ones(NumHeads, SeqLen // BlockSize, SeqLen // BlockSize).long()
+    sparse_mha = torch_blocksparse.MultiheadAttention(Embed, NumHeads, layout, BlockSize).cuda()
     # create dense multi-head attention module
     torch.manual_seed(0)
     dense_mha  = torch.nn.modules.MultiheadAttention(Embed, NumHeads).cuda()
@@ -44,12 +41,6 @@ def test_op():
         value = value.half()
         add_mask = add_mask.half()
     # run modules
-    #ctx = multiprocessing.get_context('spawn')
-    #procs = [ctx.Process(target=task, args=(query,key,value,add_mask, Embed, NumHeads, sparsity)) for i in range(2)]
-    #for p in procs:
-    #    p.start()
-    #for p in procs:
-    #    p.join()
     sparse_out, _ = sparse_mha(query, key, value, key_padding_mask=add_mask, need_weights=False)
     dense_out, _ = dense_mha(query, key, value, key_padding_mask=mul_mask, need_weights=False)
     if use_half:
