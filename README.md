@@ -1,3 +1,5 @@
+WARNING: This project is now deprecated. Please use the `triton.ops.blocksparse` module in [Triton](https://github.com/ptillet/triton)
+
 # Torch-Blocksparse
 
 Block-sparse operations for PyTorch
@@ -17,19 +19,6 @@ where `op()` is identity or transposition.
 
 Inputs are FP32 or FP16 (with tensor cores).
 
-## Installation
-Torch-Blocksparse depends on CUDA 10.1 and the [Triton](https://github.com/ptillet/triton) language and compiler, which requires llvm-10.
-```
-sudo apt-get install llvm-10-dev # Ubuntu
-```
-You can then install the latest stable version from pip
-```
-pip install torch-blocksparse
-```
-Or the latest development version from source
-```
-python setup.py install;
-```
 
 ## Usage
 
